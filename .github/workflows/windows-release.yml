@@ -37,22 +37,22 @@ jobs:
         shell: pwsh
         run: flutter pub get
 
-      - name: Materialize Flutter plugin links
+      - name: Redirect Agora SDK extraction
         shell: pwsh
         run: |
-          $pluginLinksDir = Join-Path $PWD 'windows/flutter/ephemeral/.plugin_symlinks'
-          if (Test-Path $pluginLinksDir) {
-            Get-ChildItem -LiteralPath $pluginLinksDir -Force | ForEach-Object {
-              if (-not $_.LinkType) { return }
-              $resolvedPath = (Resolve-Path -LiteralPath $_.FullName).Path
-              $materializedPath = "$($_.FullName).materialized"
-              Remove-Item -LiteralPath $materializedPath -Recurse -Force -ErrorAction SilentlyContinue
-              New-Item -ItemType Directory -Force -Path $materializedPath | Out-Null
-              Copy-Item -Path (Join-Path $resolvedPath '*') -Destination $materializedPath -Recurse -Force
-              Remove-Item -LiteralPath $_.FullName -Recurse -Force
-              Move-Item -LiteralPath $materializedPath -Destination $_.FullName
-            }
-          }
+          $packageConfig = Get-Content '.dart_tool/package_config.json' -Raw | ConvertFrom-Json
+          $agoraPackage = $packageConfig.packages | Where-Object { $_.name -eq 'agora_rtc_engine' } | Select-Object -First 1
+          if ($null -eq $agoraPackage) { throw 'agora_rtc_engine was not found in package_config.json' }
+          $agoraRoot = ([Uri]$agoraPackage.rootUri).LocalPath
+          $downloadScript = Join-Path $agoraRoot 'windows/cmake/DownloadSDK.cmake'
+          if (-not (Test-Path $downloadScript)) { throw "Agora DownloadSDK.cmake not found: $downloadScript" }
+          $agoraSdkRoot = (Join-Path $env:RUNNER_TEMP 'nuanlin-agora-sdk').Replace('\\', '/')
+          Remove-Item -LiteralPath $agoraSdkRoot -Recurse -Force -ErrorAction SilentlyContinue
+          $content = Get-Content $downloadScript -Raw
+          $content = $content.Replace('set(IRIS_DOWNLOAD_PATH "${CMAKE_CURRENT_SOURCE_DIR}/third_party/iris")', "set(IRIS_DOWNLOAD_PATH `"$agoraSdkRoot/iris`")")
+          $content = $content.Replace('set(NATIVE_DOWNLOAD_PATH "${CMAKE_CURRENT_SOURCE_DIR}/third_party/native")', "set(NATIVE_DOWNLOAD_PATH `"$agoraSdkRoot/native`")")
+          Set-Content -Path $downloadScript -Value $content -Encoding UTF8
+          Select-String -Path $downloadScript -Pattern 'DOWNLOAD_PATH'
 
       - name: Build Windows Release
         shell: pwsh
