@@ -46,7 +46,7 @@ jobs:
           $agoraRoot = ([Uri]$agoraPackage.rootUri).LocalPath
           $downloadScript = Join-Path $agoraRoot 'windows/cmake/DownloadSDK.cmake'
           if (-not (Test-Path $downloadScript)) { throw "Agora DownloadSDK.cmake not found: $downloadScript" }
-          $agoraSdkRoot = (Join-Path $env:RUNNER_TEMP 'nuanlin-agora-sdk').Replace('\\', '/')
+          $agoraSdkRoot = (Join-Path $env:RUNNER_TEMP 'nuanlin-agora-sdk').Replace('\', '/')
           Remove-Item -LiteralPath $agoraSdkRoot -Recurse -Force -ErrorAction SilentlyContinue
           $content = Get-Content $downloadScript -Raw
           $content = $content.Replace('set(IRIS_DOWNLOAD_PATH "${CMAKE_CURRENT_SOURCE_DIR}/third_party/iris")', "set(IRIS_DOWNLOAD_PATH `"$agoraSdkRoot/iris`")")
