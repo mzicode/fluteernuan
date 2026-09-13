@@ -80,7 +80,12 @@ jobs:
             if ($publicH5Url -notmatch '^https://') { throw 'CUSTOMER_IM_PUBLIC_H5_URL must use https://' }
             $defines += "--dart-define=CUSTOMER_IM_PUBLIC_H5_URL=$publicH5Url"
           }
-          flutter build windows --release --no-pub @defines
+          $buildLog = Join-Path $PWD 'windows-build.log'
+          $buildOutput = & flutter build windows --release --no-pub @defines 2>&1
+          $buildExitCode = $LASTEXITCODE
+          $buildOutput | Tee-Object -FilePath $buildLog
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "## Flutter Windows build output`n````text`n$($buildOutput -join "`n")`n````"
+          if ($buildExitCode -ne 0) { exit $buildExitCode }
 
       - name: Install Inno Setup
         shell: pwsh
@@ -109,7 +114,16 @@ jobs:
 
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
+        if: success()
         with:
           name: nuanlin-windows-release
           path: dist/windows-installer/
           if-no-files-found: error
+
+      - name: Upload build log on failure
+        uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: nuanlin-windows-build-log
+          path: windows-build.log
+          if-no-files-found: ignore
