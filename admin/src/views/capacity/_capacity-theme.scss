@@ -1,0 +1,159 @@
+@mixin light-page {
+  color: #243044;
+  background: radial-gradient(circle at 85% 0%, rgb(14 165 233 / 7%), transparent 34%), #f3f6fa;
+
+  h1,
+  h2,
+  h3,
+  .capacity-number,
+  .scenario-value,
+  .confidence-panel strong,
+  .cluster-value,
+  .fleet-card strong {
+    color: #152033;
+  }
+
+  p,
+  .live-bar,
+  .legend,
+  .cluster-label,
+  .cluster-card > span,
+  .cluster-value small,
+  .fleet-card span,
+  .fleet-card small,
+  .metric-kicker,
+  .metric-foot,
+  .capacity-number small,
+  .capacity-range,
+  .scenario-head > div > span,
+  .scenario-unit,
+  .range-row,
+  .bottleneck-row,
+  .confidence-panel span,
+  .pressure-grid span,
+  .pressure-grid small,
+  .ring-center span,
+  .ring-center strong small {
+    color: #6b7c91;
+  }
+
+  .eyebrow,
+  .section-label,
+  .live-refresh,
+  .proof-mark,
+  .simulator-mark,
+  .history-count,
+  .table-number,
+  .pressure-grid small {
+    color: #087f9d;
+  }
+
+  .live-bar,
+  .metric-card,
+  .pressure-panel,
+  .section-block,
+  .fleet-card,
+  .panel,
+  .cluster-card {
+    border-color: #dbe4ee;
+    background: rgb(255 255 255 / 96%);
+    box-shadow: 0 8px 26px rgb(15 23 42 / 6%);
+  }
+
+  .live-pill,
+  .metric-status,
+  .observe-badge,
+  .cluster-chip.success,
+  .cluster-status {
+    color: #087f5b;
+  }
+
+  .metric-status,
+  .cluster-chip.success {
+    border-color: rgb(8 127 91 / 32%);
+  }
+
+  .metric-status.accent,
+  .cluster-chip,
+  .table-number.amber,
+  .network-foot strong,
+  .bottleneck-row strong {
+    color: #9a6200;
+  }
+
+  .ring-center,
+  .mini-ring b,
+  :deep(.el-input__wrapper),
+  :deep(.el-select__wrapper) {
+    color: #152033;
+    border-color: #e1e8f0;
+    background: #f8fafc;
+    box-shadow: 0 0 0 1px #dbe4ee inset;
+  }
+
+  .ring-center strong,
+  .metric-foot strong,
+  .pressure-grid strong,
+  :deep(.el-input__inner),
+  :deep(.el-select__selected-item) {
+    color: #152033;
+  }
+
+  .metric-foot,
+  .pressure-grid,
+  .pressure-grid > div,
+  .range-row,
+  .metric-section {
+    border-color: #e3e9f0;
+  }
+
+  .capacity-track,
+  .cluster-line {
+    background: #e8edf3;
+  }
+
+  .scenario-card {
+    border-color: #dfe7ef;
+    background: #f8fafc;
+  }
+
+  .evidence-list span,
+  .warning-list span {
+    color: #8a5900;
+    background: #fff6df;
+  }
+
+  .evidence-list .complete {
+    color: #087f5b;
+    background: #edf9f3;
+  }
+
+  :deep(.el-loading-mask) {
+    background-color: rgb(248 250 252 / 84%);
+  }
+
+  :deep(.el-table),
+  :deep(.el-table tr),
+  :deep(.el-table th.el-table__cell) {
+    color: #344256;
+    background: transparent;
+  }
+
+  :deep(.el-table th.el-table__cell) {
+    color: #64748b;
+    background: #f5f7fa;
+  }
+
+  :deep(.el-table td.el-table__cell),
+  :deep(.el-table th.el-table__cell) {
+    border-bottom-color: #e5eaf0;
+  }
+
+  :deep(.el-table--enable-row-hover .el-table__body tr:hover > td.el-table__cell) {
+    background: #f1f6fa;
+  }
+
+  :deep(.el-form-item__label) {
+    color: #55657a;
+  }
+}

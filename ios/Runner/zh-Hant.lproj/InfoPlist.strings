@@ -1,0 +1,6 @@
+"CFBundleDisplayName" = "暖邻";
+"CFBundleName" = "暖邻";
+"NSPhotoLibraryUsageDescription" = "用於瀏覽系統相簿並選擇照片或影片，將您選取的內容作為聊天訊息傳送；也用於設定頭像、發佈動態及識別 QR Code。應用程式不會自動傳送未選取的內容。";
+"NSPhotoLibraryAddUsageDescription" = "用於將您主動儲存的聊天圖片、影片和 QR Code 儲存到系統相簿。";
+"NSMicrophoneUsageDescription" = "用於在您主動操作時錄製並傳送語音訊息或包含聲音的影片，以及進行語音或視訊通話。";
+"NSCameraUsageDescription" = "用於在您主動操作時拍攝照片、錄製影片、掃描 QR Code 以及進行視訊通話。";

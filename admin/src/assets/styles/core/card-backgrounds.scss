@@ -1,0 +1,237 @@
+// 后台卡片统一淡色背景系统。
+// 使用低饱和度主题色区分相邻卡片，保留 Element Plus 的亮/暗色底色作为基底。
+@mixin soft-card-surface {
+  background:
+    radial-gradient(circle at 100% 0%, var(--app-card-soft), transparent 46%),
+    linear-gradient(145deg, var(--app-card-soft), transparent 38%),
+    color-mix(in srgb, var(--el-bg-color-overlay, var(--default-box-color)) 76%, transparent) !important;
+  backdrop-filter: blur(16px) saturate(128%);
+  -webkit-backdrop-filter: blur(16px) saturate(128%);
+}
+
+:where(.el-card, .el-tabs--border-card, .art-card, .art-card-sm, .art-card-xs, .page-content) {
+  --app-card-accent: #3b82f6;
+  --app-card-soft: rgb(59 130 246 / 6%);
+
+  @include soft-card-surface;
+}
+
+// box-mode 的基础样式带有更高优先级，这里保持同等权重以确保 ArtCard 使用淡色背景。
+[data-box-mode] .art-card,
+[data-box-mode] .art-card-sm,
+[data-box-mode] .art-card-xs {
+  @include soft-card-surface;
+}
+
+:where(.el-card, .el-tabs--border-card, .art-card, .art-card-sm, .art-card-xs):nth-child(6n + 2) {
+  --app-card-accent: #0891b2;
+  --app-card-soft: rgb(8 145 178 / 6%);
+}
+
+:where(.el-card, .el-tabs--border-card, .art-card, .art-card-sm, .art-card-xs):nth-child(6n + 3) {
+  --app-card-accent: #16a34a;
+  --app-card-soft: rgb(22 163 74 / 6%);
+}
+
+:where(.el-card, .el-tabs--border-card, .art-card, .art-card-sm, .art-card-xs):nth-child(6n + 4) {
+  --app-card-accent: #d97706;
+  --app-card-soft: rgb(217 119 6 / 6%);
+}
+
+:where(.el-card, .el-tabs--border-card, .art-card, .art-card-sm, .art-card-xs):nth-child(6n + 5) {
+  --app-card-accent: #7c3aed;
+  --app-card-soft: rgb(124 58 237 / 6%);
+}
+
+:where(.el-card, .el-tabs--border-card, .art-card, .art-card-sm, .art-card-xs):nth-child(6n) {
+  --app-card-accent: #e11d48;
+  --app-card-soft: rgb(225 29 72 / 6%);
+}
+
+.art-table-card {
+  --app-card-accent: #0891b2;
+  --app-card-soft: rgb(8 145 178 / 4%);
+}
+
+// 控制台模块已有业务色变量，沿用模块语义而不是自动轮换。
+.dashboard-module .art-card {
+  background:
+    radial-gradient(circle at 100% 0%, var(--module-soft), transparent 360px),
+    linear-gradient(145deg, var(--module-soft), transparent 220px),
+    color-mix(in srgb, var(--el-bg-color-overlay, var(--default-box-color)) 76%, transparent) !important;
+}
+
+// 推送报表与安全审计使用相同的指标卡/内容卡结构。
+:where(.push-report-page, .security-page) :where(.metric-card, .section-card) {
+  --app-card-accent: #3b82f6;
+  --app-card-soft: rgb(59 130 246 / 6%);
+
+  @include soft-card-surface;
+}
+
+:where(.push-report-page, .security-page) .metric-grid > :nth-child(4n + 2),
+:where(.push-report-page, .security-page) .content-grid > :nth-child(4n + 2) {
+  --app-card-accent: #16a34a;
+  --app-card-soft: rgb(22 163 74 / 6%);
+}
+
+:where(.push-report-page, .security-page) .metric-grid > :nth-child(4n + 3),
+:where(.push-report-page, .security-page) .content-grid > :nth-child(4n + 3) {
+  --app-card-accent: #d97706;
+  --app-card-soft: rgb(217 119 6 / 6%);
+}
+
+:where(.push-report-page, .security-page) .metric-grid > :nth-child(4n),
+:where(.push-report-page, .security-page) .content-grid > :nth-child(4n) {
+  --app-card-accent: #7c3aed;
+  --app-card-soft: rgb(124 58 237 / 6%);
+}
+
+// 推送配置、系统功能设置与多线路入口。
+:where(.push-config-page, .settings-page, .multi-line-entry-page)
+  :where(.config-card, .provider-card, .feature-section-card, .endpoint-card, .entry-hero) {
+  --app-card-accent: #3b82f6;
+  --app-card-soft: rgb(59 130 246 / 6%);
+
+  @include soft-card-surface;
+}
+
+:where(.config-grid, .provider-grid, .endpoint-cards, .feature-settings-grid) > :nth-child(6n + 2) {
+  --app-card-accent: #0891b2;
+  --app-card-soft: rgb(8 145 178 / 6%);
+}
+
+:where(.config-grid, .provider-grid, .endpoint-cards, .feature-settings-grid) > :nth-child(6n + 3) {
+  --app-card-accent: #16a34a;
+  --app-card-soft: rgb(22 163 74 / 6%);
+}
+
+:where(.config-grid, .provider-grid, .endpoint-cards, .feature-settings-grid) > :nth-child(6n + 4) {
+  --app-card-accent: #d97706;
+  --app-card-soft: rgb(217 119 6 / 6%);
+}
+
+:where(.config-grid, .provider-grid, .endpoint-cards, .feature-settings-grid) > :nth-child(6n + 5) {
+  --app-card-accent: #7c3aed;
+  --app-card-soft: rgb(124 58 237 / 6%);
+}
+
+:where(.config-grid, .provider-grid, .endpoint-cards, .feature-settings-grid) > :nth-child(6n) {
+  --app-card-accent: #e11d48;
+  --app-card-soft: rgb(225 29 72 / 6%);
+}
+
+// 容量中心除顶部实时指标外的业务卡片。
+.capacity-page
+  :where(.pressure-panel, .section-block, .scenario-card, .fleet-card, .cluster-card, .panel) {
+  --app-card-accent: #3b82f6;
+  --app-card-soft: rgb(59 130 246 / 7%);
+
+  @include soft-card-surface;
+}
+
+.capacity-page :where(.scenario-grid, .fleet-grid, .cluster-grid) > :nth-child(4n + 2) {
+  --app-card-accent: #16a34a;
+  --app-card-soft: rgb(22 163 74 / 7%);
+}
+
+.capacity-page :where(.scenario-grid, .fleet-grid, .cluster-grid) > :nth-child(4n + 3) {
+  --app-card-accent: #d97706;
+  --app-card-soft: rgb(217 119 6 / 7%);
+}
+
+.capacity-page :where(.scenario-grid, .fleet-grid, .cluster-grid) > :nth-child(4n) {
+  --app-card-accent: #7c3aed;
+  --app-card-soft: rgb(124 58 237 / 7%);
+}
+
+// VIP、角色权限以及少量非 Element Plus 自定义卡片。
+.vip-page .vip-stat-card,
+.role-permissions-page :where(.role-sidebar, .permission-panel),
+.diagnostic-panel {
+  --app-card-accent: #3b82f6;
+  --app-card-soft: rgb(59 130 246 / 6%);
+
+  @include soft-card-surface;
+}
+
+.vip-overview > :nth-child(5n + 2) {
+  --app-card-accent: #0891b2;
+  --app-card-soft: rgb(8 145 178 / 6%);
+}
+
+.vip-overview > :nth-child(5n + 3) {
+  --app-card-accent: #16a34a;
+  --app-card-soft: rgb(22 163 74 / 6%);
+}
+
+.vip-overview > :nth-child(5n + 4) {
+  --app-card-accent: #7c3aed;
+  --app-card-soft: rgb(124 58 237 / 6%);
+}
+
+.vip-overview > :nth-child(5n) {
+  --app-card-accent: #e11d48;
+  --app-card-soft: rgb(225 29 72 / 6%);
+}
+
+.role-permissions-page .permission-panel {
+  --app-card-accent: #7c3aed;
+  --app-card-soft: rgb(124 58 237 / 6%);
+}
+
+.settings-page .feature-section-card--keepalive {
+  --app-card-accent: #16a34a;
+  --app-card-soft: rgb(22 163 74 / 6%);
+}
+
+.settings-page .feature-section-card--security {
+  --app-card-accent: #e11d48;
+  --app-card-soft: rgb(225 29 72 / 6%);
+}
+
+.settings-page .feature-section-card--moment {
+  --app-card-accent: #7c3aed;
+  --app-card-soft: rgb(124 58 237 / 6%);
+}
+
+.settings-page .feature-section-card--portal {
+  --app-card-accent: #0891b2;
+  --app-card-soft: rgb(8 145 178 / 6%);
+}
+
+.settings-page .feature-section-card--new-user {
+  --app-card-accent: #3b82f6;
+  --app-card-soft: rgb(59 130 246 / 6%);
+}
+
+.settings-page .feature-section-card--group {
+  --app-card-accent: #d97706;
+  --app-card-soft: rgb(217 119 6 / 6%);
+}
+
+:where(.health-page, .push-report-page, .security-page, .push-config-page) > .page-head {
+  --app-card-accent: #3b82f6;
+  --app-card-soft: rgb(59 130 246 / 5%);
+
+  @include soft-card-surface;
+}
+
+// 暗色主题下略微提高色彩可见度，但仍保持低对比度。
+.dark {
+  :where(.el-card, .el-tabs--border-card, .art-card, .art-card-sm, .art-card-xs, .page-content),
+  :where(.push-report-page, .security-page) :where(.metric-card, .section-card),
+  :where(.push-config-page, .settings-page, .multi-line-entry-page)
+    :where(.config-card, .provider-card, .feature-section-card, .endpoint-card, .entry-hero),
+  .capacity-page
+    :where(.pressure-panel, .section-block, .scenario-card, .fleet-card, .cluster-card, .panel),
+  .vip-page .vip-stat-card,
+  .role-permissions-page :where(.role-sidebar, .permission-panel),
+  .diagnostic-panel,
+  :where(.health-page, .push-report-page, .security-page, .push-config-page) > .page-head {
+    background:
+      radial-gradient(circle at 100% 0%, var(--app-card-soft), transparent 48%),
+      linear-gradient(145deg, var(--app-card-soft), transparent 40%),
+      color-mix(in srgb, var(--el-bg-color-overlay, var(--default-box-color)) 72%, transparent) !important;
+  }
+}

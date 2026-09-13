@@ -1,0 +1,98 @@
+name: Windows Release
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    env:
+      CUSTOMER_IM_SERVER_URL: ${{ vars.CUSTOMER_IM_SERVER_URL }}
+      CUSTOMER_IM_WS_URL: ${{ vars.CUSTOMER_IM_WS_URL }}
+      CUSTOMER_IM_BOOTSTRAP_URL: ${{ vars.CUSTOMER_IM_BOOTSTRAP_URL }}
+      CUSTOMER_IM_PUBLIC_H5_URL: ${{ vars.CUSTOMER_IM_PUBLIC_H5_URL }}
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: '3.44.1'
+          cache: true
+
+      - name: Enable Windows desktop
+        shell: pwsh
+        run: flutter config --enable-windows-desktop
+
+      - name: Install dependencies
+        shell: pwsh
+        run: flutter pub get
+
+      - name: Build Windows Release
+        shell: pwsh
+        run: |
+          $serverUrl = $env:CUSTOMER_IM_SERVER_URL
+          if ([string]::IsNullOrWhiteSpace($serverUrl)) { $serverUrl = 'https://web.cybndo.com' }
+          $wsUrl = $env:CUSTOMER_IM_WS_URL
+          if ([string]::IsNullOrWhiteSpace($wsUrl)) { $wsUrl = 'wss://web.cybndo.com/api/v1/ws' }
+          $bootstrapUrl = $env:CUSTOMER_IM_BOOTSTRAP_URL
+          if ([string]::IsNullOrWhiteSpace($bootstrapUrl)) { $bootstrapUrl = "$serverUrl/api/v1/client/bootstrap" }
+          $publicH5Url = $env:CUSTOMER_IM_PUBLIC_H5_URL
+
+          if ($serverUrl -notmatch '^https://') { throw 'CUSTOMER_IM_SERVER_URL must use https://' }
+          if ($wsUrl -notmatch '^wss://') { throw 'CUSTOMER_IM_WS_URL must use wss://' }
+          if ($bootstrapUrl -notmatch '^https://') { throw 'CUSTOMER_IM_BOOTSTRAP_URL must use https://' }
+          if ($serverUrl -match 'localhost|127\.0\.0\.1|10\.0\.2\.2') { throw 'Local server URL is not allowed' }
+          if ($wsUrl -match 'localhost|127\.0\.0\.1|10\.0\.2\.2') { throw 'Local WebSocket URL is not allowed' }
+
+          $defines = @(
+            "--dart-define=CUSTOMER_IM_SERVER_URL=$serverUrl",
+            "--dart-define=CUSTOMER_IM_WS_URL=$wsUrl",
+            "--dart-define=CUSTOMER_IM_BOOTSTRAP_URL=$bootstrapUrl"
+          )
+          if (-not [string]::IsNullOrWhiteSpace($publicH5Url)) {
+            if ($publicH5Url -notmatch '^https://') { throw 'CUSTOMER_IM_PUBLIC_H5_URL must use https://' }
+            $defines += "--dart-define=CUSTOMER_IM_PUBLIC_H5_URL=$publicH5Url"
+          }
+          flutter build windows --release @defines
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --no-progress -y
+
+      - name: Build Setup.exe
+        shell: pwsh
+        run: |
+          $sourceDir = (Resolve-Path 'build/windows/x64/runner/Release').Path
+          $outputDir = Join-Path $PWD 'dist/windows-installer'
+          New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
+          & 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe' `
+            "/DSourceDir=$sourceDir" `
+            "/DOutputDir=$outputDir" `
+            '/DMyAppName=暖邻' `
+            '/DMyAppVersion=1.0.1' `
+            'windows/installer/customer_setup.iss'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Get-ChildItem $outputDir -File | ForEach-Object {
+            (Get-FileHash $_.FullName -Algorithm SHA256).Hash | Set-Content "$($_.FullName).sha256.txt"
+          }
+
+      - name: Archive portable Release
+        shell: pwsh
+        run: Compress-Archive -Path 'build/windows/x64/runner/Release/*' -DestinationPath 'dist/windows-installer/暖邻-Windows-Release.zip'
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: nuanlin-windows-release
+          path: dist/windows-installer/
+          if-no-files-found: error

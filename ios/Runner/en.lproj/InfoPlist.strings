@@ -1,0 +1,6 @@
+"CFBundleDisplayName" = "Instant Messaging";
+"CFBundleName" = "Instant Messaging";
+"NSPhotoLibraryUsageDescription" = "Allow access to browse photos and videos and send the items you select as chat messages. Access is also used to update an avatar, post a Moment, or scan a QR code. Unselected items are never sent automatically.";
+"NSPhotoLibraryAddUsageDescription" = "Allow saving chat photos, videos, and QR codes to your photo library when you choose to save them.";
+"NSMicrophoneUsageDescription" = "Allow microphone access when you record and send voice messages or videos with sound, or make voice and video calls.";
+"NSCameraUsageDescription" = "Allow camera access when you take photos, record videos, scan QR codes, or make video calls.";
