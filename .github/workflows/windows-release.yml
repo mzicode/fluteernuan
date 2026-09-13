@@ -80,7 +80,7 @@ jobs:
             if ($publicH5Url -notmatch '^https://') { throw 'CUSTOMER_IM_PUBLIC_H5_URL must use https://' }
             $defines += "--dart-define=CUSTOMER_IM_PUBLIC_H5_URL=$publicH5Url"
           }
-          flutter build windows --release @defines
+          flutter build windows --release --no-pub @defines
 
       - name: Install Inno Setup
         shell: pwsh
