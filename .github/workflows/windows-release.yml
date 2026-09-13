@@ -37,6 +37,23 @@ jobs:
         shell: pwsh
         run: flutter pub get
 
+      - name: Materialize Flutter plugin links
+        shell: pwsh
+        run: |
+          $pluginLinksDir = Join-Path $PWD 'windows/flutter/ephemeral/.plugin_symlinks'
+          if (Test-Path $pluginLinksDir) {
+            Get-ChildItem -LiteralPath $pluginLinksDir -Force | ForEach-Object {
+              if (-not $_.LinkType) { return }
+              $resolvedPath = (Resolve-Path -LiteralPath $_.FullName).Path
+              $materializedPath = "$($_.FullName).materialized"
+              Remove-Item -LiteralPath $materializedPath -Recurse -Force -ErrorAction SilentlyContinue
+              New-Item -ItemType Directory -Force -Path $materializedPath | Out-Null
+              Copy-Item -Path (Join-Path $resolvedPath '*') -Destination $materializedPath -Recurse -Force
+              Remove-Item -LiteralPath $_.FullName -Recurse -Force
+              Move-Item -LiteralPath $materializedPath -Destination $_.FullName
+            }
+          }
+
       - name: Build Windows Release
         shell: pwsh
         run: |
