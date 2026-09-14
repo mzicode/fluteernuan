@@ -19,11 +19,12 @@
 #endif
 
 #ifndef SourceDir
-  #define SourceDir "..\..\build\windows\x64\runner\Release"
+  ; Forward slashes avoid ISPP treating "\x64" / "\r" as C-style escapes.
+  #define SourceDir "../../build/windows/x64/runner/Release"
 #endif
 
 #ifndef OutputDir
-  #define OutputDir "..\..\dist\windows-installer"
+  #define OutputDir "../../dist/windows-installer"
 #endif
 
 #ifndef OutputBaseFilename
@@ -38,7 +39,7 @@ AppPublisher={#MyAppPublisher}
 DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 UninstallDisplayIcon={app}\{#MyAppExeName}
-SetupIconFile=..\runner\resources\app_icon.ico
+SetupIconFile=../runner/resources/app_icon.ico
 WizardStyle=modern
 Compression=lzma2
 SolidCompression=yes
@@ -50,13 +51,13 @@ OutputDir={#OutputDir}
 OutputBaseFilename={#OutputBaseFilename}
 
 [Languages]
-Name: "chinesesimplified"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
+Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional tasks:"; Flags: unchecked
 
 [Files]
-Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#SourceDir}/*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"

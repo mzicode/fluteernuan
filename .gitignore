@@ -19,6 +19,8 @@ macos/Pods/
 macos/.symlinks/
 macos/Flutter/ephemeral/
 windows/flutter/ephemeral/
+windows/installer/_ci_setup.iss
+dist/
 
 admin/node_modules/
 admin-kf/node_modules/
