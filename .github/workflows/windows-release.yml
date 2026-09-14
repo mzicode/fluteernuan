@@ -7,11 +7,12 @@ on:
       - main
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build-windows:
     runs-on: windows-latest
+    timeout-minutes: 120
     env:
       CUSTOMER_IM_SERVER_URL: ${{ vars.CUSTOMER_IM_SERVER_URL }}
       CUSTOMER_IM_WS_URL: ${{ vars.CUSTOMER_IM_WS_URL }}
@@ -21,6 +22,12 @@ jobs:
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
+
+      - name: Enable Windows long paths
+        shell: pwsh
+        run: |
+          git config --system core.longpaths true
+          New-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' -Name 'LongPathsEnabled' -Value 1 -PropertyType DWORD -Force | Out-Null
 
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
@@ -37,22 +44,13 @@ jobs:
         shell: pwsh
         run: flutter pub get
 
-      - name: Redirect Agora SDK extraction
+      - name: Flutter doctor
         shell: pwsh
-        run: |
-          $packageConfig = Get-Content '.dart_tool/package_config.json' -Raw | ConvertFrom-Json
-          $agoraPackage = $packageConfig.packages | Where-Object { $_.name -eq 'agora_rtc_engine' } | Select-Object -First 1
-          if ($null -eq $agoraPackage) { throw 'agora_rtc_engine was not found in package_config.json' }
-          $agoraRoot = ([Uri]$agoraPackage.rootUri).LocalPath
-          $downloadScript = Join-Path $agoraRoot 'windows/cmake/DownloadSDK.cmake'
-          if (-not (Test-Path $downloadScript)) { throw "Agora DownloadSDK.cmake not found: $downloadScript" }
-          $agoraSdkRoot = (Join-Path $env:RUNNER_TEMP 'nuanlin-agora-sdk').Replace('\', '/')
-          Remove-Item -LiteralPath $agoraSdkRoot -Recurse -Force -ErrorAction SilentlyContinue
-          $content = Get-Content $downloadScript -Raw
-          $content = $content.Replace('set(IRIS_DOWNLOAD_PATH "${CMAKE_CURRENT_SOURCE_DIR}/third_party/iris")', "set(IRIS_DOWNLOAD_PATH `"$agoraSdkRoot/iris`")")
-          $content = $content.Replace('set(NATIVE_DOWNLOAD_PATH "${CMAKE_CURRENT_SOURCE_DIR}/third_party/native")', "set(NATIVE_DOWNLOAD_PATH `"$agoraSdkRoot/native`")")
-          Set-Content -Path $downloadScript -Value $content -Encoding UTF8
-          Select-String -Path $downloadScript -Pattern 'DOWNLOAD_PATH'
+        run: flutter doctor -v
+
+      - name: Prepare Agora and Firebase native SDKs
+        shell: pwsh
+        run: ./tool/windows/prepare_windows_native_sdks.ps1
 
       - name: Build Windows Release
         shell: pwsh
@@ -80,12 +78,39 @@ jobs:
             if ($publicH5Url -notmatch '^https://') { throw 'CUSTOMER_IM_PUBLIC_H5_URL must use https://' }
             $defines += "--dart-define=CUSTOMER_IM_PUBLIC_H5_URL=$publicH5Url"
           }
+
+          $env:CMAKE_BUILD_PARALLEL_LEVEL = $env:NUMBER_OF_PROCESSORS
           $buildLog = Join-Path $PWD 'windows-build.log'
+          Write-Host "Building with $($defines -join ' ')"
           $buildOutput = & flutter build windows --release --no-pub @defines 2>&1
           $buildExitCode = $LASTEXITCODE
           $buildOutput | Tee-Object -FilePath $buildLog
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "## Flutter Windows build output`n````text`n$($buildOutput -join "`n")`n````"
+          if ($env:GITHUB_STEP_SUMMARY) {
+            $preview = ($buildOutput | Select-Object -Last 80) -join "`n"
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "## Flutter Windows build tail`n``````text`n$preview`n``````"
+          }
           if ($buildExitCode -ne 0) { exit $buildExitCode }
+
+          $exe = 'build/windows/x64/runner/Release/customer.exe'
+          if (-not (Test-Path -LiteralPath $exe)) { throw "Release exe was not produced: $exe" }
+          Get-Item -LiteralPath $exe | Format-List FullName, Length, LastWriteTime
+
+      - name: Collect CMake diagnostics
+        if: failure()
+        shell: pwsh
+        run: |
+          $diagDir = Join-Path $PWD 'windows-cmake-diagnostics'
+          New-Item -ItemType Directory -Force -Path $diagDir | Out-Null
+          $patterns = @('CMakeError.log', 'CMakeOutput.log', 'err', 'out')
+          Get-ChildItem -Path 'build/windows' -Recurse -File -ErrorAction SilentlyContinue |
+            Where-Object { $patterns -contains $_.Name -or $_.Name -like '*.log' } |
+            Select-Object -First 40 |
+            ForEach-Object {
+              $relative = $_.FullName.Substring((Resolve-Path 'build/windows').Path.Length).TrimStart('\')
+              $target = Join-Path $diagDir ($relative -replace '[\\/]', '_')
+              Copy-Item -LiteralPath $_.FullName -Destination $target -Force
+            }
+          Get-ChildItem $diagDir | ForEach-Object { Write-Host $_.Name }
 
       - name: Install Inno Setup
         shell: pwsh
@@ -97,20 +122,30 @@ jobs:
           $sourceDir = (Resolve-Path 'build/windows/x64/runner/Release').Path
           $outputDir = Join-Path $PWD 'dist/windows-installer'
           New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
+          $version = '1.0.1'
+          $pubspec = Get-Content 'pubspec.yaml' -Raw
+          if ($pubspec -match '(?m)^version:\s*([^\s+]+)') {
+            $version = $Matches[1]
+          }
+          $outputBase = "NuanLin-Windows-Setup-$version"
           & 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe' `
             "/DSourceDir=$sourceDir" `
             "/DOutputDir=$outputDir" `
             '/DMyAppName=暖邻' `
-            '/DMyAppVersion=1.0.1' `
+            "/DMyAppVersion=$version" `
+            "/DOutputBaseFilename=$outputBase" `
             'windows/installer/customer_setup.iss'
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Get-ChildItem $outputDir -File | ForEach-Object {
-            (Get-FileHash $_.FullName -Algorithm SHA256).Hash | Set-Content "$($_.FullName).sha256.txt"
+            (Get-FileHash $_.FullName -Algorithm SHA256).Hash | Set-Content -Encoding ascii "$($_.FullName).sha256.txt"
           }
 
       - name: Archive portable Release
         shell: pwsh
-        run: Compress-Archive -Path 'build/windows/x64/runner/Release/*' -DestinationPath 'dist/windows-installer/暖邻-Windows-Release.zip'
+        run: |
+          Compress-Archive -Path 'build/windows/x64/runner/Release/*' -DestinationPath 'dist/windows-installer/NuanLin-Windows-Release.zip' -Force
+          $zip = Get-Item 'dist/windows-installer/NuanLin-Windows-Release.zip'
+          (Get-FileHash $zip.FullName -Algorithm SHA256).Hash | Set-Content -Encoding ascii "$($zip.FullName).sha256.txt"
 
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
@@ -120,10 +155,21 @@ jobs:
           path: dist/windows-installer/
           if-no-files-found: error
 
+      - name: Publish GitHub Release
+        if: success()
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: windows-build-${{ github.run_number }}
+          name: Windows ${{ github.run_number }}
+          files: dist/windows-installer/*
+          generate_release_notes: true
+
       - name: Upload build log on failure
         uses: actions/upload-artifact@v4
         if: failure()
         with:
           name: nuanlin-windows-build-log
-          path: windows-build.log
+          path: |
+            windows-build.log
+            windows-cmake-diagnostics/
           if-no-files-found: ignore

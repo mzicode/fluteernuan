@@ -35,14 +35,13 @@ add_definitions(-DUNICODE -D_UNICODE)
 
 # Compilation settings that should be applied to most targets.
 #
-# Be cautious about adding new options here, as plugins use this function by
-# default. In most cases, you should add new options to specific targets instead
-# of modifying this function.
+# Plugins inherit this function. Do not treat warnings as errors, and do not
+# disable C++ exceptions: Agora, Firebase, JNI and WebView2 plugins all rely on
+# standard MSVC exception handling and UTF-8 sources.
 function(APPLY_STANDARD_SETTINGS TARGET)
   target_compile_features(${TARGET} PUBLIC cxx_std_17)
-  target_compile_options(${TARGET} PRIVATE /W4 /WX /wd"4100")
-  target_compile_options(${TARGET} PRIVATE /EHsc)
-  target_compile_definitions(${TARGET} PRIVATE "_HAS_EXCEPTIONS=0")
+  target_compile_options(${TARGET} PRIVATE /W4 /wd"4100" /wd"4244" /wd"4267" /wd"4996" /wd"4458" /wd"4819")
+  target_compile_options(${TARGET} PRIVATE /EHsc /utf-8)
   target_compile_definitions(${TARGET} PRIVATE "$<$<CONFIG:Debug>:_DEBUG>")
 endfunction()
 
@@ -80,11 +79,13 @@ install(FILES "${FLUTTER_ICU_DATA_FILE}" DESTINATION "${INSTALL_BUNDLE_DATA_DIR}
 install(FILES "${FLUTTER_LIBRARY}" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
   COMPONENT Runtime)
 
-if(PLUGIN_BUNDLED_LIBRARIES)
-  install(FILES "${PLUGIN_BUNDLED_LIBRARIES}"
-    DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
-    COMPONENT Runtime)
-endif()
+foreach(bundled_lib IN LISTS PLUGIN_BUNDLED_LIBRARIES)
+  if(bundled_lib)
+    install(FILES "${bundled_lib}"
+      DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
+      COMPONENT Runtime)
+  endif()
+endforeach()
 
 # Copy the native assets provided by the build.dart from all packages.
 set(NATIVE_ASSETS_DIR "${PROJECT_BUILD_DIR}native_assets/windows/")

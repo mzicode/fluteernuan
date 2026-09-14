@@ -26,6 +26,10 @@
   #define OutputDir "..\..\dist\windows-installer"
 #endif
 
+#ifndef OutputBaseFilename
+  #define OutputBaseFilename "NuanLin-Windows-Setup-" + MyAppVersion
+#endif
+
 [Setup]
 AppId={#MyAppId}
 AppName={#MyAppName}
@@ -43,7 +47,7 @@ ArchitecturesInstallIn64BitMode=x64compatible
 PrivilegesRequired=admin
 DisableProgramGroupPage=yes
 OutputDir={#OutputDir}
-OutputBaseFilename={#MyAppName}-Windows-Setup-{#MyAppVersion}
+OutputBaseFilename={#OutputBaseFilename}
 
 [Languages]
 Name: "chinesesimplified"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"

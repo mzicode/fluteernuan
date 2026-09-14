@@ -34,6 +34,10 @@
   #error WebView2BootstrapperPath must point to Microsoft's signed Evergreen Bootstrapper
 #endif
 
+#ifndef OutputBaseFilename
+  #define OutputBaseFilename "NuanLin-Windows-Setup-" + MyAppVersion
+#endif
+
 [Setup]
 AppId={#MyAppId}
 AppName={#MyAppName}
@@ -54,7 +58,7 @@ DisableProgramGroupPage=yes
 CloseApplications=yes
 RestartApplications=yes
 OutputDir={#OutputDir}
-OutputBaseFilename=Customer-Windows-Compatible-Setup-{#MyAppVersion}
+OutputBaseFilename={#OutputBaseFilename}
 VersionInfoVersion={#MyAppVersion}
 VersionInfoCompany={#MyAppPublisher}
 VersionInfoDescription={#MyAppName} Windows compatible installer
