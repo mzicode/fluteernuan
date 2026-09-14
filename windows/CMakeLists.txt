@@ -33,6 +33,10 @@ set(CMAKE_CXX_FLAGS_PROFILE "${CMAKE_CXX_FLAGS_RELEASE}")
 # Use Unicode for all projects.
 add_definitions(-DUNICODE -D_UNICODE)
 
+# Visual Studio 2022 17.10+ / VS 2026 treat <experimental/coroutine> as a hard
+# error (STL1011). Several Flutter Windows plugins still include that header.
+add_compile_definitions(_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS)
+
 # Compilation settings that should be applied to most targets.
 #
 # Plugins inherit this function. Do not treat warnings as errors, and do not
@@ -42,7 +46,9 @@ function(APPLY_STANDARD_SETTINGS TARGET)
   target_compile_features(${TARGET} PUBLIC cxx_std_17)
   target_compile_options(${TARGET} PRIVATE /W4 /wd"4100" /wd"4244" /wd"4267" /wd"4996" /wd"4458" /wd"4819")
   target_compile_options(${TARGET} PRIVATE /EHsc /utf-8)
-  target_compile_definitions(${TARGET} PRIVATE "$<$<CONFIG:Debug>:_DEBUG>")
+  target_compile_definitions(${TARGET} PRIVATE
+    _SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS
+    "$<$<CONFIG:Debug>:_DEBUG>")
 endfunction()
 
 # Flutter library and tool build rules.

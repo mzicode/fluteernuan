@@ -11,13 +11,14 @@ permissions:
 
 jobs:
   build-windows:
-    runs-on: windows-latest
+    runs-on: windows-2022
     timeout-minutes: 120
     env:
       CUSTOMER_IM_SERVER_URL: ${{ vars.CUSTOMER_IM_SERVER_URL }}
       CUSTOMER_IM_WS_URL: ${{ vars.CUSTOMER_IM_WS_URL }}
       CUSTOMER_IM_BOOTSTRAP_URL: ${{ vars.CUSTOMER_IM_BOOTSTRAP_URL }}
       CUSTOMER_IM_PUBLIC_H5_URL: ${{ vars.CUSTOMER_IM_PUBLIC_H5_URL }}
+      CL: /D_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS
 
     steps:
       - name: Checkout source
@@ -80,13 +81,17 @@ jobs:
           }
 
           $env:CMAKE_BUILD_PARALLEL_LEVEL = $env:NUMBER_OF_PROCESSORS
+          $env:CL = '/D_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS'
           $buildLog = Join-Path $PWD 'windows-build.log'
           Write-Host "Building with $($defines -join ' ')"
-          $buildOutput = & flutter build windows --release --no-pub @defines 2>&1
+          $buildOutput = & flutter build windows --release --verbose --no-pub @defines 2>&1
           $buildExitCode = $LASTEXITCODE
           $buildOutput | Tee-Object -FilePath $buildLog
           if ($env:GITHUB_STEP_SUMMARY) {
+            $errors = $buildOutput | Select-String -Pattern 'error C|error STL|CMake Error|Build process failed|fatal error' | Select-Object -Last 40
             $preview = ($buildOutput | Select-Object -Last 80) -join "`n"
+            $errorText = if ($errors) { ($errors | ForEach-Object { $_.Line }) -join "`n" } else { '(no compiler error lines captured)' }
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "## Compiler errors`n``````text`n$errorText`n``````"
             Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "## Flutter Windows build tail`n``````text`n$preview`n``````"
           }
           if ($buildExitCode -ne 0) { exit $buildExitCode }
