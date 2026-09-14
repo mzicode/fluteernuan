@@ -124,66 +124,10 @@ jobs:
 
       - name: Build Setup.exe
         id: installer
+        if: success()
         continue-on-error: true
         shell: pwsh
-        run: |
-          $releaseDir = (Resolve-Path 'build/windows/x64/runner/Release').Path
-          $outputDir = Join-Path $PWD 'dist/windows-installer'
-          New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
-          $version = '1.0.1'
-          $pubspec = Get-Content 'pubspec.yaml' -Raw
-          if ($pubspec -match '(?m)^version:\s*([^\s+]+)') {
-            $version = $Matches[1]
-          }
-          $outputBase = "NuanLin-Windows-Setup-$version"
-
-          # Do not pass Windows paths through ISCC /D. Unquoted D:\a\... and
-          # NuanLin-Windows-Setup-1.0.1 are ISPP expressions; \x64 is a hex escape.
-          $sourceDir = ($releaseDir -replace '\\', '/')
-          $outputDirUnix = ($outputDir -replace '\\', '/')
-          $wrapper = Join-Path $PWD 'windows/installer/_ci_setup.iss'
-          $wrapperContent = @"
-#define SourceDir "$sourceDir"
-#define OutputDir "$outputDirUnix"
-#define MyAppVersion "$version"
-#define OutputBaseFilename "$outputBase"
-#include "customer_setup.iss"
-"@
-          $utf8 = New-Object System.Text.UTF8Encoding $false
-          [System.IO.File]::WriteAllText($wrapper, $wrapperContent, $utf8)
-          Write-Host "Inno wrapper:`n$wrapperContent"
-
-          $iscc = @(
-            'C:\Program Files (x86)\Inno Setup 6\ISCC.exe',
-            'C:\Program Files\Inno Setup 6\ISCC.exe'
-          ) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
-          if (-not $iscc) {
-            $cmd = Get-Command iscc -ErrorAction SilentlyContinue
-            if ($cmd) { $iscc = $cmd.Source }
-          }
-          if (-not $iscc) { throw 'ISCC.exe not found after Inno Setup install' }
-
-          $isccArgs = @(
-            "/O$outputDir",
-            "/F$outputBase",
-            $wrapper
-          )
-          Write-Host "ISCC: $iscc"
-          Write-Host "ISCC args: $($isccArgs -join ' ')"
-          $log = Join-Path $outputDir 'iscc.log'
-          $output = & $iscc @isccArgs 2>&1
-          $exitCode = $LASTEXITCODE
-          $output | Tee-Object -FilePath $log
-          if ($env:GITHUB_STEP_SUMMARY) {
-            $preview = ($output | Select-Object -Last 80) -join "`n"
-            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "## Inno Setup`n``````text`n$preview`n``````"
-          }
-          if ($exitCode -ne 0) { exit $exitCode }
-          Get-ChildItem $outputDir -File | ForEach-Object {
-            if ($_.Extension -eq '.txt' -and $_.Name -like '*.sha256.txt') { return }
-            if ($_.Name -eq 'iscc.log') { return }
-            (Get-FileHash $_.FullName -Algorithm SHA256).Hash | Set-Content -Encoding ascii "$($_.FullName).sha256.txt"
-          }
+        run: ./tool/windows/build_windows_installer.ps1
 
       - name: Archive portable Release
         id: archive
