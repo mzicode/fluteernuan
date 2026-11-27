@@ -178,6 +178,17 @@ $nertcZip = Join-Path $nertcNativeDir ($nertcFileName + '.zip')
 Invoke-Download -Url $nertcUrl -Destination $nertcZip
 Write-Host "NERTC SDK prepared at $nertcZip"
 
+# The plugin forces /MT, while Flutter's wrapper is built with /MD. Linking
+# them produces LNK2038 and duplicate CRT symbols, so the Windows package never
+# finishes. Use the dynamic runtime that the rest of the Flutter build uses.
+$nertcPluginCmake = Join-Path $nertcRoot 'windows/CMakeLists.txt'
+$nertcPluginText = [System.IO.File]::ReadAllText($nertcPluginCmake)
+$nertcRuntimePatched = $nertcPluginText.Replace('/MTd', '/MDd').Replace('/MT', '/MD')
+if ($nertcRuntimePatched -ne $nertcPluginText) {
+    Write-Utf8NoBom -Path $nertcPluginCmake -Content $nertcRuntimePatched
+    Write-Host "Patched nertc_core to use the dynamic MSVC runtime"
+}
+
 $jniRoot = Get-PackageRoot 'jni'
 $jniCmake = Join-Path $jniRoot 'src/CMakeLists.txt'
 if (Test-Path -LiteralPath $jniCmake) {
