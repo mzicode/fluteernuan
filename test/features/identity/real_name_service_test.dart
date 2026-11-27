@@ -2,12 +2,6 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:customer/features/identity/services/real_name_service.dart';
 
 void main() {
-  test('validates mainland China ID checksum and birthday', () {
-    expect(isValidMainlandChinaIdNumber('11010519491231002X'), isTrue);
-    expect(isValidMainlandChinaIdNumber('110105194912310021'), isFalse);
-    expect(isValidMainlandChinaIdNumber('11010520991231002X'), isFalse);
-  });
-
   test('parses all real-name review states and masked fields', () {
     final status = RealNameStatus.fromJson(const {
       'status': 'rejected',
@@ -30,5 +24,18 @@ void main() {
 
     expect(pending.canEdit, isFalse);
     expect(approved.canEdit, isFalse);
+  });
+
+  test('formats submitted_at and reviewed_at as Beijing wall time', () {
+    final status = RealNameStatus.fromJson(const {
+      'status': 'pending',
+      'submitted_at': '2026-10-01T16:30:00Z',
+      'reviewed_at': '2026-10-01T18:05:45.123Z',
+    });
+
+    expect(status.submittedAt, '2026-10-02 00:30:00');
+    expect(status.reviewedAt, '2026-10-02 02:05:45');
+    expect(status.submittedAt.contains('T'), isFalse);
+    expect(status.submittedAt.contains('Z'), isFalse);
   });
 }

@@ -15,6 +15,7 @@ import '../../../core/services/api/websocket_service.dart';
 import '../../../core/services/notification_sound_service.dart';
 import '../../chat/providers/chat_provider.dart';
 import '../../contacts/providers/contact_provider.dart';
+import '../widgets/popup_announcement_host.dart';
 import 'home_desktop_page.dart';
 
 // 关键声明：home page 是页面入口，负责组装局部状态、监听用户操作并把副作用交给 Provider/Service。
@@ -215,7 +216,8 @@ class HomePage extends ConsumerWidget {
       ),
     );
 
-    return Scaffold(
+    return PopupAnnouncementHost(
+      child: Scaffold(
       extendBody: true,
       body: Stack(
         children: [
@@ -234,6 +236,7 @@ class HomePage extends ConsumerWidget {
         ],
       ),
       // 编辑模式下隐藏底部导航栏
+    ),
     );
   }
 

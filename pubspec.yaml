@@ -1,7 +1,7 @@
 name: customer
 description: A Telegram-style instant messaging app built with Flutter.
 publish_to: 'none'
-version: 1.0.1+60
+version: 1.1.9+89
 
 environment:
   sdk: '>=3.2.0 <4.0.0'
@@ -113,6 +113,8 @@ dependencies:
   
   # 音视频通话（Agora / LiveKit）
   agora_rtc_engine: 6.5.4
+  nertc_core: 5.9.30
+  nertc_core_platform_interface: 5.9.30
   flutter_webrtc: 0.12.12+hotfix.1
   
   # iOS CallKit 来电显示
@@ -165,6 +167,8 @@ dev_dependencies:
 dependency_overrides:
   record_web: ^1.3.0
   record_linux: ^1.2.1
+  flutter_callkit_incoming:
+    path: third_party/flutter_callkit_incoming
   video_player_android:
     path: third_party/video_player_android
   speech_to_text_windows:

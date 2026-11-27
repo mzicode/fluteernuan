@@ -271,6 +271,31 @@ class ChatMediaCacheManager {
     return ApiConfig.getMediaUrl(raw);
   }
 
+  /// 私有媒体签名失败或过期后，必须清掉 `media:{id}` 缓存，否则 403 会一直占着同一个 cacheKey。
+  static Future<void> evictImage({
+    String? cacheKey,
+    String? url,
+  }) async {
+    final key = cacheKey?.trim() ?? '';
+    if (key.isNotEmpty) {
+      try {
+        await instance.removeFile(key);
+      } catch (_) {}
+    }
+    final normalized = normalizeUrl(url);
+    if (normalized.isEmpty ||
+        isLocalPath(normalized) ||
+        normalized.startsWith('data:')) {
+      return;
+    }
+    try {
+      await CachedNetworkImage.evictFromCache(
+        normalized,
+        cacheManager: instance,
+      );
+    } catch (_) {}
+  }
+
   static void prefetchImage(String? value) {
     if (kIsWeb) return;
     final url = normalizeUrl(value);

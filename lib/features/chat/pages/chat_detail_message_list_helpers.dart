@@ -9,8 +9,29 @@ extension _ChatDetailMessageListHelpers on _ChatDetailPageState {
     // 根据聊天类型选择不同的提示文字
     String titleText;
     String subtitleText;
+    final language = AppLocalizations.of(context).language;
+    ChatItem? listChat;
+    for (final chat in ref.read(chatListProvider).allChats) {
+      if (chat.id == widget.chatId) {
+        listChat = chat;
+        break;
+      }
+    }
+    final hasJoinMarker = widget.chatType == ChatType.group &&
+        (ref
+                .read(chatListProvider.notifier)
+                .hasLocalGroupJoinMarker(widget.chatId) ||
+            isGroupJoinPreviewText(listChat?.lastMessage));
+    final chatDetail = ref.read(chatDetailProvider(widget.chatId)).valueOrNull;
+    final muted = chatDetail?.canSendMessage == false;
 
-    if (widget.chatType == ChatType.group) {
+    if (hasJoinMarker) {
+      titleText = groupJoinEmptyTitleText(language: language);
+      subtitleText = groupJoinEmptySubtitleText(
+        language: language,
+        muted: muted,
+      );
+    } else if (widget.chatType == ChatType.group) {
       titleText = _localizedText(
         zhCN: '暂无消息',
         zhTW: '暫無訊息',
@@ -100,6 +121,9 @@ extension _ChatDetailMessageListHelpers on _ChatDetailPageState {
 
   // 系统消息（如"xxx 加入了群组"）居中小字显示
   Widget _buildSystemMessage(String content) {
+    if (isMemberMuteSystemMessage(content)) {
+      return const SizedBox.shrink();
+    }
     final displayText = resolveSystemMessageText(
       content,
       currentUserId: ref.read(authServiceProvider).user?.uuid,

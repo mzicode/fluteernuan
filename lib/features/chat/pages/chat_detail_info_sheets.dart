@@ -97,15 +97,6 @@ class _UserInfoSheet extends StatelessWidget {
                 en: 'On',
               ),
             ),
-            _ActionRow(
-              icon: Icons.block_outlined,
-              title: _chatDetailText(
-                context,
-                zhCN: '屏蔽用户',
-                zhTW: '封鎖使用者',
-                en: 'Block User',
-              ),
-            ),
           ],
         ),
       ),

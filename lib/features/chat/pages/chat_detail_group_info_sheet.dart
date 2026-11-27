@@ -232,14 +232,32 @@ class _GroupInfoSheet extends ConsumerWidget {
               ),
             ),
             const SizedBox(height: 18),
-            _ActionRow(
-              icon: Icons.person_add_outlined,
-              title: _chatDetailText(
-                context,
-                zhCN: '添加成员',
-                zhTW: '新增成員',
-                en: 'Add Members',
-              ),
+            chatDetailAsync.when(
+              data: (chat) {
+                final canAddMembers = chat != null &&
+                    (chat.myRole >= 2 ||
+                        (chat.myRole == 1 && chat.canAddMembers));
+                if (!canAddMembers) return const SizedBox.shrink();
+                return _ActionRow(
+                  icon: Icons.person_add_outlined,
+                  title: _chatDetailText(
+                    context,
+                    zhCN: '添加成员',
+                    zhTW: '新增成員',
+                    en: 'Add Members',
+                  ),
+                  onTap: () {
+                    final router = GoRouter.of(context);
+                    Navigator.of(context).pop();
+                    router.push(
+                      '/group/$groupId/profile?name=${Uri.encodeComponent(name)}'
+                      '${avatar?.isNotEmpty == true ? '&avatar=${Uri.encodeComponent(avatar!)}' : ''}',
+                    );
+                  },
+                );
+              },
+              loading: () => const SizedBox.shrink(),
+              error: (_, __) => const SizedBox.shrink(),
             ),
 
             // 显示群组号

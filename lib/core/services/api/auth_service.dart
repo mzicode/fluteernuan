@@ -941,7 +941,9 @@ class AuthService extends StateNotifier<AuthState> {
       }
       if (phone != null && phone.isNotEmpty) {
         data['phone'] = phone;
-        data['sms_code'] = smsCode;
+        if (smsCode != null && smsCode.isNotEmpty) {
+          data['sms_code'] = smsCode;
+        }
       }
       if (email != null && email.isNotEmpty) {
         data['email'] = email;

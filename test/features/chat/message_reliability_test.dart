@@ -15,6 +15,7 @@ MessageItem _message({
   bool isOutgoing = true,
   bool burnAfterRead = false,
   bool burnLocked = false,
+  bool isDeleted = false,
   int? burnCountdownSeconds,
   String? localPath,
   String? mediaUrl,
@@ -36,6 +37,7 @@ MessageItem _message({
     burnAfterRead: burnAfterRead,
     burnLocked: burnLocked,
     burnCountdownSeconds: burnCountdownSeconds,
+    isDeleted: isDeleted,
     localPath: localPath,
     mediaUrl: mediaUrl,
     mediaId: mediaId,
@@ -579,6 +581,64 @@ void main() {
     expect(result.first.content, 'server snapshot');
   });
 
+  test('revoked messages are filtered before the first message window renders',
+      () {
+    final visible = _message(id: 'm-visible', seq: 2);
+    final revoked = _message(id: 'm-revoked', seq: 1, isDeleted: true);
+
+    final result = debugFilterRevokedMessages(
+      [visible, revoked, _message(id: 'm-local-deleted', seq: 3)],
+      {'m-local-deleted'},
+    );
+
+    expect(result.map((message) => message.id), ['m-visible']);
+  });
+
+  test('memory window never restores a revoked message', () {
+    const accountId = 'account-revoked-cache-test';
+    const chatId = 'chat-1';
+    addTearDown(
+      () => MessageMemoryWindowCache.remove(
+        accountId: accountId,
+        chatId: chatId,
+      ),
+    );
+
+    MessageMemoryWindowCache.write(
+      accountId: accountId,
+      chatId: chatId,
+      messages: [
+        _message(id: 'm-visible', seq: 2),
+        _message(id: 'm-revoked', seq: 1, isDeleted: true),
+      ],
+    );
+
+    final restored = MessageMemoryWindowCache.read(
+      accountId: accountId,
+      chatId: chatId,
+    );
+
+    expect(restored.map((message) => message.id), ['m-visible']);
+  });
+
+  test('server revoked snapshot replaces an older visible cached message', () {
+    final result = debugReconcileReliableMessageWindow(
+      [_message(id: 'm-1', seq: 8, content: 'visible before revoke')],
+      [
+        _message(
+          id: 'm-1',
+          seq: 8,
+          content: '此消息已撤回',
+          isDeleted: true,
+        ),
+      ],
+    );
+
+    expect(result, hasLength(1));
+    expect(result.single.isDeleted, isTrue);
+    expect(result.single.content, '此消息已撤回');
+  });
+
   test('sparse latest local window needs initial history backfill', () {
     final localWindow = [
       _message(id: 'm-68', seq: 68),
@@ -588,6 +648,20 @@ void main() {
     ];
 
     expect(debugShouldBackfillInitialHistoryWindow(localWindow), isTrue);
+  });
+
+  test('membership-only window does not trigger extra history backfill', () {
+    final localWindow = List.generate(
+      30,
+      (index) => _message(
+        id: 'join-${30 - index}',
+        seq: 400 - index,
+        type: MessageItemType.system,
+        content: '张三 邀请 李四 加入了群组',
+      ),
+    );
+
+    expect(debugShouldBackfillInitialHistoryWindow(localWindow), isFalse);
   });
 
   test('full local window does not trigger initial history backfill', () {
@@ -623,6 +697,36 @@ void main() {
     expect(result.first.seq, 250);
     expect(result.any((message) => message.id == 'm-1'), isTrue);
     expect(result.map((message) => message.id).toSet(), hasLength(200));
+  });
+
+  test('claim notices stay in the realtime window instead of being dropped', () {
+    final claims = List<MessageItem>.generate(220, (index) {
+      final seq = 221 - index;
+      return _message(
+        id: 'claim-$seq',
+        seq: seq,
+        isOutgoing: false,
+        type: MessageItemType.system,
+        content:
+            '{"type":"red_packet_claimed","claimer_name":"用户$seq","red_packet_id":"rp-1"}',
+      );
+    });
+    final packet = _message(
+      id: 'rp-bubble',
+      seq: 1,
+      type: MessageItemType.redPacket,
+      content:
+          '{"id":"rp-1","type":"lucky","chat_id":"c1","total_amount":10,"total_count":200}',
+    );
+
+    final result = boundActiveRealtimeMessageWindow(
+      [...claims, packet],
+      limit: 200,
+    );
+
+    expect(result, hasLength(200));
+    expect(result.any((message) => message.id.startsWith('claim-')), isTrue);
+    expect(result.first.seq, 221);
   });
 
   test('persistence batch keeps the latest snapshot per message id', () async {

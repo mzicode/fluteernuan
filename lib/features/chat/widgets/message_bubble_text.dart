@@ -148,7 +148,9 @@ extension _MessageBubbleText on MessageBubble {
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.end,
                   children: [
-                    Flexible(child: _buildRichTextContent(context, textColor)),
+                    Flexible(
+                      child: _buildRichTextContent(context, textColor),
+                    ),
                     SizedBox(
                       width: message.isEdited
                           ? (isOutgoing ? 88 : 66)

@@ -13,20 +13,15 @@ extension _ChatDetailMessageList on _ChatDetailPageState {
       ref.watch(contactListProvider),
     );
     final chatDetail = ref.watch(chatDetailProvider(widget.chatId)).valueOrNull;
+    final members = ref.watch(chatMembersProvider(widget.chatId)).valueOrNull ??
+        const <api.ChatMember>[];
+    final memberById = <String, api.ChatMember>{
+      for (final member in members) member.userId: member,
+    };
+    final officialUsers = ref.watch(officialUsersProvider).valueOrNull ?? {};
     final canOpenMemberProfile =
         widget.chatType != ChatType.group || (chatDetail?.myRole ?? 0) >= 2;
-    final canSeeMembershipEvents =
-        widget.chatType != ChatType.group || (chatDetail?.myRole ?? 0) >= 2;
-    final visibleMessages = messages
-        .where(
-          (message) =>
-              !message.isDeleted &&
-              (widget.chatType != ChatType.group ||
-                  message.type != MessageItemType.system ||
-                  (canSeeMembershipEvents &&
-                      isGroupMembershipSystemMessage(message.content))),
-        )
-        .toList(growable: false);
+    final visibleMessages = _visibleChatMessages(messages);
     final displayItems = _buildMessageDisplayItems(visibleMessages);
     final voicePlaylist = visibleMessages
         .where(
@@ -67,6 +62,13 @@ extension _ChatDetailMessageList on _ChatDetailPageState {
             entry.message,
             contactDisplayNames,
           );
+          final senderMember = memberById[message.senderId];
+          final senderRole = senderMember?.role ?? message.senderRole;
+          final senderOfficial = message.senderOfficial ||
+              containsOfficialIdentifier(
+                officialUsers,
+                [message.senderId],
+              );
           final albumMessages = entry.albumMessages
               .map(
                 (item) =>
@@ -103,15 +105,26 @@ extension _ChatDetailMessageList on _ChatDetailPageState {
           final visibilityId = entry.isAlbum
               ? 'album_${message.mediaGroupId}_${albumMessages.length}'
               : message.id;
+          final rowKey = _messageKeys.putIfAbsent(visibilityId, GlobalKey.new);
+          if (entry.isAlbum) {
+            for (final albumMessage in albumMessages) {
+              _messageKeys[albumMessage.id] = rowKey;
+            }
+          } else {
+            _messageKeys[message.id] = rowKey;
+          }
           final row = Column(
-            key: _messageKeys.putIfAbsent(visibilityId, GlobalKey.new),
+            key: rowKey,
             children: [
               if (showDateDivider) this._buildDateDivider(message.createdAt),
               if (message.type == MessageItemType.system)
                 this._buildSystemMessage(message.content)
               else
                 Container(
-                  decoration: _highlightedMessageId == message.id
+                  decoration: _highlightedMessageId == message.id ||
+                          albumMessages.any(
+                            (item) => item.id == _highlightedMessageId,
+                          )
                       ? BoxDecoration(
                           color: AppColors.primaryWithOpacity(context, 0.2),
                           borderRadius: BorderRadius.circular(12),
@@ -138,6 +151,8 @@ extension _ChatDetailMessageList on _ChatDetailPageState {
                                 (widget.chatType == ChatType.channel &&
                                     !message.isOutgoing),
                             isGroupChat: widget.chatType == ChatType.group,
+                            senderRole: senderRole,
+                            senderOfficial: senderOfficial,
                             onTap: this._buildMessageTapHandler(message),
                             onLongPressStart: (details) =>
                                 this._showMessageOptions(
@@ -221,6 +236,25 @@ extension _ChatDetailMessageList on _ChatDetailPageState {
         .markVisibleMessagesAsReadUpToSeq(highestIncomingSeq);
   }
 
+  List<MessageItem> _visibleChatMessages(List<MessageItem> messages) {
+    return messages.where((message) {
+      if (message.isDeleted) return false;
+      // 禁言/解禁系统通知一律不展示（气泡与居中系统条）
+      if (isMemberMuteSystemMessage(message.content)) return false;
+      return true;
+    }).toList(growable: false);
+  }
+
+  int _messageDisplayIndex(
+    List<_MessageDisplayItem> displayItems,
+    String messageId,
+  ) {
+    return displayItems.indexWhere((item) {
+      if (item.message.id == messageId) return true;
+      return item.albumMessages.any((message) => message.id == messageId);
+    });
+  }
+
   /// 构建多选模式操作栏
   List<_MessageDisplayItem> _buildMessageDisplayItems(
     List<MessageItem> messages,
@@ -278,8 +312,8 @@ extension _ChatDetailMessageList on _ChatDetailPageState {
         .watch(messageListProvider(widget.chatId))
         .where((message) => _selectedMessageIds.contains(message.id))
         .toList(growable: false);
-    final canForwardSelected =
-        count > 0 && !selectedMessages.any((message) => message.burnAfterRead);
+    final canForwardSelected = count > 0 &&
+        selectedMessages.every((message) => message.isForwardableContent);
 
     return ClipRect(
       child: BackdropFilter(

@@ -219,9 +219,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     final configuredName =
         ref.watch(systemSettingsProvider).valueOrNull?.displayName.trim() ?? '';
     final systemSettings = ref.watch(systemSettingsProvider).valueOrNull;
-    final showWallet = (systemSettings?.walletEnabled ?? true) &&
-        (!PlatformUtils.isIOS ||
-            (systemSettings?.iosCompliance.allowsWallet ?? false));
+    final showWallet = systemSettings?.walletEnabled ?? true;
     final appName =
         configuredName.isNotEmpty ? configuredName : defaultAppDisplayName();
     final isFloatingNavHidden = ref.watch(floatingNavHiddenProvider);
@@ -567,19 +565,21 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
   }
 
   void _showAboutSheet(BuildContext context, bool isDark) {
-    final bottomSpacing = FloatingNavLayout.reservedSpace(context, extra: 20);
-
     showModalBottomSheet(
       context: context,
       backgroundColor: Colors.transparent,
+      isScrollControlled: true,
       builder: (context) => Container(
+        constraints: BoxConstraints(
+          maxHeight: MediaQuery.sizeOf(context).height * 0.85,
+        ),
         decoration: BoxDecoration(
           color: AppColors.cardFor(context),
           borderRadius: const BorderRadius.vertical(top: Radius.circular(12)),
         ),
         child: SafeArea(
-          child: Padding(
-            padding: EdgeInsets.fromLTRB(24, 24, 24, bottomSpacing),
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.fromLTRB(24, 24, 24, 24),
             child: Consumer(
               builder: (context, ref, _) {
                 final aboutInfoAsync = ref.watch(aboutInfoProvider);

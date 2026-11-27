@@ -1,4 +1,5 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:intl/intl.dart';
 
 import '../../../core/services/api/api_client.dart';
 
@@ -28,6 +29,16 @@ class RealNameStatus {
   bool get isRejected => status == 'rejected';
   bool get canEdit => status == 'unsubmitted' || isRejected;
 
+  /// 将接口返回的 ISO 时间（含 T/Z）格式化为北京时间 `yyyy-MM-dd HH:mm:ss`
+  static String formatBeijingDateTime(String? raw) {
+    final value = raw?.trim() ?? '';
+    if (value.isEmpty) return '';
+    final parsed = DateTime.tryParse(value);
+    if (parsed == null) return value;
+    final beijing = parsed.toUtc().add(const Duration(hours: 8));
+    return DateFormat('yyyy-MM-dd HH:mm:ss').format(beijing);
+  }
+
   factory RealNameStatus.fromJson(Map<String, dynamic> json) {
     String text(List<String> keys) {
       for (final key in keys) {
@@ -47,39 +58,14 @@ class RealNameStatus {
       maskedIdNumber: text(const ['masked_id_number', 'id_number_masked']),
       idNumberLast4: text(const ['id_number_last4', 'id_card_last4']),
       rejectReason: text(const ['reject_reason', 'reason']),
-      submittedAt: text(const ['submitted_at', 'created_at']),
-      reviewedAt: text(const ['reviewed_at', 'updated_at']),
+      submittedAt: formatBeijingDateTime(
+        text(const ['submitted_at', 'created_at']),
+      ),
+      reviewedAt: formatBeijingDateTime(
+        text(const ['reviewed_at', 'updated_at']),
+      ),
     );
   }
-}
-
-bool isValidMainlandChinaIdNumber(String input) {
-  final value = input.trim().toUpperCase();
-  if (!RegExp(r'^\d{17}[\dX]$').hasMatch(value)) return false;
-
-  final year = int.tryParse(value.substring(6, 10));
-  final month = int.tryParse(value.substring(10, 12));
-  final day = int.tryParse(value.substring(12, 14));
-  if (year == null || month == null || day == null) return false;
-  try {
-    final birthday = DateTime(year, month, day);
-    if (birthday.year != year ||
-        birthday.month != month ||
-        birthday.day != day ||
-        birthday.isAfter(DateTime.now())) {
-      return false;
-    }
-  } catch (_) {
-    return false;
-  }
-
-  const weights = [7, 9, 10, 5, 8, 4, 2, 1, 6, 3, 7, 9, 10, 5, 8, 4, 2];
-  const checks = ['1', '0', 'X', '9', '8', '7', '6', '5', '4', '3', '2'];
-  var sum = 0;
-  for (var index = 0; index < 17; index++) {
-    sum += int.parse(value[index]) * weights[index];
-  }
-  return checks[sum % 11] == value[17];
 }
 
 class RealNameService {

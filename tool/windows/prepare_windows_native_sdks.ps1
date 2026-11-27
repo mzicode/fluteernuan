@@ -138,8 +138,9 @@ $jniRoot = Get-PackageRoot 'jni'
 $jniCmake = Join-Path $jniRoot 'src/CMakeLists.txt'
 if (Test-Path -LiteralPath $jniCmake) {
     $jniContent = [System.IO.File]::ReadAllText($jniCmake)
+    $oldTarget = 'set_target_properties(${TARGET_NAME} PROPERTIES'
     $patched = $jniContent.Replace(
-        'set_target_properties(${TARGET_NAME} PROPERTIES',
+        $oldTarget,
         'set_target_properties(jni PROPERTIES'
     )
     if ($patched -ne $jniContent) {

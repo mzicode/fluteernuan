@@ -29,6 +29,51 @@ class AndroidBackgroundRestrictionStatus {
   }
 }
 
+class AndroidIncomingCallPermissionStatus {
+  const AndroidIncomingCallPermissionStatus({
+    required this.notificationGranted,
+    required this.fullScreenIntentGranted,
+    required this.isXiaomi,
+    this.vendor = '',
+    this.xiaomiBackgroundPopupGranted,
+    this.xiaomiLockScreenGranted,
+  });
+
+  final bool notificationGranted;
+  final bool fullScreenIntentGranted;
+  final bool isXiaomi;
+  final String vendor;
+  final bool? xiaomiBackgroundPopupGranted;
+  final bool? xiaomiLockScreenGranted;
+
+  bool get needsXiaomiPermissionGuide =>
+      isXiaomi &&
+      (xiaomiBackgroundPopupGranted != true ||
+          xiaomiLockScreenGranted != true);
+
+  bool get needsVendorPermissionGuide =>
+      needsXiaomiPermissionGuide ||
+      (!isXiaomi &&
+          const {'oppo', 'realme', 'oneplus', 'vivo', 'iqoo', 'huawei', 'honor'}
+              .contains(vendor));
+
+  factory AndroidIncomingCallPermissionStatus.fromMap(
+    Map<String, dynamic>? value,
+  ) {
+    return AndroidIncomingCallPermissionStatus(
+      notificationGranted: value?['notification_granted'] == true,
+      fullScreenIntentGranted:
+          value?['full_screen_intent_granted'] == true,
+      isXiaomi: value?['is_xiaomi'] == true,
+      vendor: value?['vendor']?.toString() ?? '',
+      xiaomiBackgroundPopupGranted:
+          value?['xiaomi_background_popup_granted'] as bool?,
+      xiaomiLockScreenGranted:
+          value?['xiaomi_lock_screen_granted'] as bool?,
+    );
+  }
+}
+
 class AndroidNotificationSettingsService {
   static const MethodChannel _channel = MethodChannel('com.customer/settings');
 
@@ -74,6 +119,52 @@ class AndroidNotificationSettingsService {
 
   static Future<bool> openAppSettingsPage() async {
     if (!Platform.isAndroid) return false;
+    return openAppSettings();
+  }
+
+  static Future<AndroidIncomingCallPermissionStatus?>
+      incomingCallPermissionStatus() async {
+    if (!Platform.isAndroid) return null;
+    try {
+      final value = await _channel.invokeMapMethod<String, dynamic>(
+        'getIncomingCallPermissionStatus',
+      );
+      return AndroidIncomingCallPermissionStatus.fromMap(value);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static Future<bool> openFullScreenIntentSettings() async {
+    if (!Platform.isAndroid) return false;
+    try {
+      return await _channel.invokeMethod<bool>(
+            'openFullScreenIntentSettings',
+          ) ==
+          true;
+    } catch (_) {
+      return open();
+    }
+  }
+
+  static Future<bool> openXiaomiCallPermissionSettings() async {
+    if (!Platform.isAndroid) return false;
+    try {
+      return await _channel.invokeMethod<bool>(
+            'openXiaomiCallPermissionSettings',
+          ) ==
+          true;
+    } catch (_) {
+      return openAppSettings();
+    }
+  }
+
+  static Future<bool> openVendorCallPermissionSettings() async {
+    if (!Platform.isAndroid) return false;
+    try {
+      if (await _channel.invokeMethod<bool>('openVendorCallPermissionSettings') ==
+          true) return true;
+    } catch (_) {}
     return openAppSettings();
   }
 

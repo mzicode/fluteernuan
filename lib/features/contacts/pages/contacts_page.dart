@@ -326,6 +326,7 @@ class _ContactsPageState extends ConsumerState<ContactsPage>
                             height: MediaQuery.of(context).size.height * 0.42,
                             child: _buildEmptyState(l10n),
                           ),
+                          _buildContactCountFooter(filteredContacts.length),
                         ],
                       ),
                     )
@@ -342,7 +343,8 @@ class _ContactsPageState extends ConsumerState<ContactsPage>
                             padding:
                                 EdgeInsets.only(bottom: floatingBottomSpace),
                             itemCount: groupedContacts.length +
-                                (_searchQuery.isEmpty ? 1 : 0),
+                                (_searchQuery.isEmpty ? 1 : 0) +
+                                1,
                             itemBuilder: (context, index) {
                               if (_searchQuery.isEmpty && index == 0) {
                                 return _buildContactsQuickActions(
@@ -353,6 +355,13 @@ class _ContactsPageState extends ConsumerState<ContactsPage>
                                   dividerColor: dividerColor,
                                   pendingFriendRequestCount:
                                       pendingFriendRequestCount,
+                                );
+                              }
+                              if (index ==
+                                  groupedContacts.length +
+                                      (_searchQuery.isEmpty ? 1 : 0)) {
+                                return _buildContactCountFooter(
+                                  filteredContacts.length,
                                 );
                               }
                               final groupIndex =
@@ -524,6 +533,32 @@ class _ContactsPageState extends ConsumerState<ContactsPage>
     );
   }
 
+  Widget _buildContactCountFooter(int count) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 20, 16, 12),
+      child: Text(
+        _searchQuery.isEmpty
+            ? _contactsPageText(
+                context,
+                zhCN: '共 $count 位联系人',
+                zhTW: '共 $count 位聯絡人',
+                en: '$count contacts in total',
+              )
+            : _contactsPageText(
+                context,
+                zhCN: '找到 $count 位联系人',
+                zhTW: '找到 $count 位聯絡人',
+                en: '$count contacts found',
+              ),
+        textAlign: TextAlign.center,
+        style: TextStyle(
+          fontSize: 13,
+          color: AppColors.textTertiaryFor(context),
+        ),
+      ),
+    );
+  }
+
   Widget _buildContactsQuickActions({
     required BuildContext context,
     required AppLocalizations l10n,
@@ -570,14 +605,6 @@ class _ContactsPageState extends ConsumerState<ContactsPage>
                 zhCN: '群聊', zhTW: '群聊', en: 'Groups'),
             isDark: isDark,
             onTap: () => _openChatDirectory(context, ChatItemType.group),
-          ),
-          Divider(height: 1, thickness: 0.5, indent: 56, color: dividerColor),
-          _TGActionTile(
-            icon: Icons.campaign_outlined,
-            title: _contactsPageText(context,
-                zhCN: '频道', zhTW: '頻道', en: 'Channels'),
-            isDark: isDark,
-            onTap: () => _openChatDirectory(context, ChatItemType.channel),
           ),
           Divider(height: 1, thickness: 0.5, color: dividerColor),
         ],

@@ -681,11 +681,7 @@ class S3DirectUploadService {
     }
     if (missing.isEmpty) return resolved;
 
-    final response = await _apiClient.post<Map<String, dynamic>>(
-      '/media/access-urls',
-      data: <String, dynamic>{'media_ids': missing},
-      fromJson: _asMap,
-    );
+    var response = await _postAccessUrlsWithRetry(missing);
     if (response.isSuccess && response.data != null) {
       final items = response.data!['items'];
       if (items is List) {
@@ -733,6 +729,31 @@ class S3DirectUploadService {
       );
     }
     return resolved;
+  }
+
+  Future<ApiResponse<Map<String, dynamic>>> _postAccessUrls(
+    List<String> mediaIds,
+  ) {
+    return _apiClient.post<Map<String, dynamic>>(
+      '/media/access-urls',
+      data: <String, dynamic>{'media_ids': mediaIds},
+      fromJson: _asMap,
+    );
+  }
+
+  Future<ApiResponse<Map<String, dynamic>>> _postAccessUrlsWithRetry(
+    List<String> mediaIds,
+  ) async {
+    try {
+      return await _postAccessUrls(mediaIds);
+    } catch (error) {
+      debugPrint(
+        '[Media] resolveAccessURLs retrying: '
+        'count=${mediaIds.length} error=$error',
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 400));
+      return _postAccessUrls(mediaIds);
+    }
   }
 
   void _rememberAccessURL(

@@ -25,6 +25,22 @@ packages:
       url: "https://pub.flutter-io.cn"
     source: hosted
     version: "6.5.4"
+  alog_macos:
+    dependency: transitive
+    description:
+      name: alog_macos
+      sha256: "4709e9e7540f887102e7614f1c4ba6ac4e38d4ed1b8db5c47a2fb1ed5cc2989e"
+      url: "https://pub.flutter-io.cn"
+    source: hosted
+    version: "1.0.12"
+  alog_windows:
+    dependency: transitive
+    description:
+      name: alog_windows
+      sha256: bc0e6fecd1b666b6d84075d611a62f5c968ddc38fded4bdd1684db6368c16264
+      url: "https://pub.flutter-io.cn"
+    source: hosted
+    version: "1.0.12"
   analyzer:
     dependency: transitive
     description:
@@ -689,10 +705,9 @@ packages:
   flutter_callkit_incoming:
     dependency: "direct main"
     description:
-      name: flutter_callkit_incoming
-      sha256: "993fb0f0cd990961072f0d13ff815a91773f92bfa1895be17d3366b2225ec9cd"
-      url: "https://pub.flutter-io.cn"
-    source: hosted
+      path: "third_party/flutter_callkit_incoming"
+      relative: true
+    source: path
     version: "2.5.8"
   flutter_image_compress:
     dependency: "direct main"
@@ -1445,6 +1460,22 @@ packages:
       url: "https://pub.flutter-io.cn"
     source: hosted
     version: "7.2.0"
+  nertc_core:
+    dependency: "direct main"
+    description:
+      name: nertc_core
+      sha256: b66671de19fb7c98ba0710c0eab043a0a6002e24a513c3c02859489f2b681d6b
+      url: "https://pub.flutter-io.cn"
+    source: hosted
+    version: "5.9.30"
+  nertc_core_platform_interface:
+    dependency: "direct main"
+    description:
+      name: nertc_core_platform_interface
+      sha256: "3a787b0d24792026014198c9a3fc17cd9c4c20e77f1c103304fe6fc4127e63b9"
+      url: "https://pub.flutter-io.cn"
+    source: hosted
+    version: "5.9.30"
   nm:
     dependency: transitive
     description:
@@ -2496,6 +2527,14 @@ packages:
       url: "https://pub.flutter-io.cn"
     source: hosted
     version: "3.1.4"
+  yunxin_alog:
+    dependency: transitive
+    description:
+      name: yunxin_alog
+      sha256: "98b07beb1f4c147136788d0c5799c362fef64ca5e4bec1264d70325b4afa50b9"
+      url: "https://pub.flutter-io.cn"
+    source: hosted
+    version: "2.0.11"
 sdks:
   dart: ">=3.12.0 <4.0.0"
   flutter: ">=3.44.0"

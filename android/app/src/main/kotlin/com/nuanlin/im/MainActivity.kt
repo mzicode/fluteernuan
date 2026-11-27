@@ -1,11 +1,13 @@
 package com.nuanlin.im
 
 import android.Manifest
+import android.app.AppOpsManager
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.KeyguardManager
 import android.app.ActivityManager
+import android.content.ActivityNotFoundException
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -43,6 +45,8 @@ import org.json.JSONObject
 class MainActivity : FlutterFragmentActivity() {
     private val notificationPermissionRequestCode = 9101
     private val hotUpdateChannelName = "com.customer/hot_update"
+    private val pendingApkInstallPreferenceName = "pending_apk_install"
+    private val pendingApkInstallPathKey = "local_file_path"
     private val pushVendorChannelName = "com.customer/push_vendor"
     private val settingsChannelName = "com.customer/settings"
     private val messageNotificationChannelName = "com.customer/message_notifications"
@@ -57,6 +61,7 @@ class MainActivity : FlutterFragmentActivity() {
     private var pendingDeepLink: String? = null
     private var pendingNotificationPermissionResult: MethodChannel.Result? = null
     private var pendingNotificationTap: Map<String, Any>? = null
+    private var pendingApkInstallRetryScheduled = false
     private var isActivityResumed = false
     private var oppoCallbackProxy: Any? = null
     private val pushExecutor: ExecutorService = Executors.newSingleThreadExecutor()
@@ -99,6 +104,7 @@ class MainActivity : FlutterFragmentActivity() {
     override fun onResume() {
         super.onResume()
         isActivityResumed = true
+        retryPendingApkInstallIfAllowed()
     }
 
     override fun onPause() {
@@ -149,6 +155,10 @@ class MainActivity : FlutterFragmentActivity() {
 
                     "applyPatch" -> {
                         result.success(applyAndroidPatch(call.arguments))
+                    }
+
+                    "retryPendingInstall" -> {
+                        result.success(retryPendingApkInstallNow())
                     }
 
                     else -> result.notImplemented()
@@ -277,9 +287,13 @@ class MainActivity : FlutterFragmentActivity() {
             .setMethodCallHandler { call: MethodCall, result: MethodChannel.Result ->
                 when (call.method) {
                     "getNotificationPermissionStatus" -> result.success(notificationPermissionStatus())
+                    "getIncomingCallPermissionStatus" -> result.success(incomingCallPermissionStatus())
                     "getBackgroundRestrictionStatus" -> result.success(backgroundRestrictionStatus())
                     "requestNotificationPermission" -> requestNotificationPermission(result)
                     "openNotificationSettings" -> result.success(openNotificationSettings())
+                    "openFullScreenIntentSettings" -> result.success(openFullScreenIntentSettings())
+                    "openXiaomiCallPermissionSettings" -> result.success(openXiaomiCallPermissionSettings())
+                    "openVendorCallPermissionSettings" -> result.success(openVendorCallPermissionSettings())
                     "openBatterySettings" -> result.success(openBatterySettings())
                     "openAutoStartSettings" -> result.success(openAutoStartSettings())
                     else -> result.notImplemented()
@@ -736,6 +750,58 @@ class MainActivity : FlutterFragmentActivity() {
         )
     }
 
+    private fun incomingCallPermissionStatus(): Map<String, Any?> {
+        val notification = notificationPermissionStatus()
+        val manufacturer = (Build.MANUFACTURER ?: "").lowercase()
+        val brand = (Build.BRAND ?: "").lowercase()
+        val vendor = when {
+            listOf("xiaomi", "redmi", "poco").any { manufacturer.contains(it) || brand.contains(it) } -> "xiaomi"
+            listOf("oppo", "realme", "oneplus", "vivo", "iqoo", "huawei", "honor")
+                .any { manufacturer.contains(it) || brand.contains(it) } ->
+                listOf("oppo", "realme", "oneplus", "vivo", "iqoo", "huawei", "honor")
+                    .first { manufacturer.contains(it) || brand.contains(it) }
+            else -> ""
+        }
+        val isXiaomi = manufacturer.contains("xiaomi") ||
+            manufacturer.contains("redmi") ||
+            manufacturer.contains("poco") ||
+            brand.contains("xiaomi") ||
+            brand.contains("redmi") || brand.contains("poco")
+        val notificationManager =
+            getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        val fullScreenGranted =
+            Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE ||
+                notificationManager.canUseFullScreenIntent()
+
+        return mapOf(
+            "notification_granted" to (notification["enabled"] == true),
+            "full_screen_intent_granted" to fullScreenGranted,
+            "is_xiaomi" to isXiaomi,
+            "vendor" to vendor,
+            // MIUI/HyperOS 没有公开 SDK，只能通过其 AppOps 状态做尽力检测。
+            "xiaomi_background_popup_granted" to
+                if (isXiaomi) checkMiuiAppOp(10021) else null,
+            "xiaomi_lock_screen_granted" to
+                if (isXiaomi) checkMiuiAppOp(10020) else null,
+        )
+    }
+
+    private fun checkMiuiAppOp(operation: Int): Boolean? {
+        return try {
+            val appOps = getSystemService(Context.APP_OPS_SERVICE) as AppOpsManager
+            val method = AppOpsManager::class.java.getMethod(
+                "checkOpNoThrow",
+                Int::class.javaPrimitiveType,
+                Int::class.javaPrimitiveType,
+                String::class.java,
+            )
+            val mode = method.invoke(appOps, operation, applicationInfo.uid, packageName) as? Int
+            mode == AppOpsManager.MODE_ALLOWED
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
     private fun isCurrentChatActuallyVisible(): Boolean {
         val power = getSystemService(Context.POWER_SERVICE) as PowerManager
         val keyguard = getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
@@ -781,6 +847,61 @@ class MainActivity : FlutterFragmentActivity() {
                 false
             }
         }
+    }
+
+    private fun openFullScreenIntentSettings(): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            return true
+        }
+        return startFirstAvailable(
+            listOf(
+                Intent(Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT).apply {
+                    data = Uri.parse("package:$packageName")
+                },
+                Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+                    putExtra(Settings.EXTRA_APP_PACKAGE, packageName)
+                },
+            ),
+        )
+    }
+
+    private fun openXiaomiCallPermissionSettings(): Boolean {
+        return startFirstAvailable(
+            listOf(
+                Intent("miui.intent.action.APP_PERM_EDITOR").apply {
+                    component = ComponentName(
+                        "com.miui.securitycenter",
+                        "com.miui.permcenter.permissions.PermissionsEditorActivity",
+                    )
+                    putExtra("extra_pkgname", packageName)
+                },
+                Intent("miui.intent.action.APP_PERM_EDITOR").apply {
+                    component = ComponentName(
+                        "com.miui.securitycenter",
+                        "com.miui.permcenter.permissions.AppPermissionsEditorActivity",
+                    )
+                    putExtra("extra_pkgname", packageName)
+                },
+                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                    data = Uri.parse("package:$packageName")
+                },
+            ),
+        )
+    }
+
+    private fun openVendorCallPermissionSettings(): Boolean {
+        val manufacturer = Build.MANUFACTURER.orEmpty().lowercase()
+        val brand = Build.BRAND.orEmpty().lowercase()
+        if (listOf("xiaomi", "redmi", "poco").any { manufacturer.contains(it) || brand.contains(it) }) {
+            return openXiaomiCallPermissionSettings()
+        }
+        return startFirstAvailable(
+            listOf(
+                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                    data = Uri.parse("package:$packageName")
+                },
+            ),
+        )
     }
 
     private fun openBatterySettings(): Boolean {
@@ -893,63 +1014,157 @@ class MainActivity : FlutterFragmentActivity() {
     }
 
     private fun installDownloadedApk(localFilePath: String): Map<String, Any> {
-        val file = File(localFilePath)
-        if (!file.exists() || !file.isFile) {
+        val source = File(localFilePath)
+        if (!source.exists() || !source.isFile) {
             return mapOf(
                 "success" to false,
                 "requires_restart" to false,
                 "message" to "patch_file_missing",
             )
         }
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !packageManager.canRequestPackageInstalls()) {
-            return if (openUnknownAppsSettings()) {
-                mapOf(
-                    "success" to false,
-                    "requires_restart" to false,
-                    "message" to "android_install_permission_required",
-                )
-            } else {
-                mapOf(
-                    "success" to false,
-                    "requires_restart" to false,
-                    "message" to "android_install_permission_settings_failed",
-                )
-            }
+        if (source.length() < 4096L) {
+            return mapOf(
+                "success" to false,
+                "requires_restart" to false,
+                "message" to "downloaded_apk_invalid",
+            )
         }
 
+        // 复制到 files/hot_update，保证 FileProvider 路径稳定，避免临时目录被清掉后装不了。
+        val installFile = try {
+            prepareInstallableApk(source)
+        } catch (t: Throwable) {
+            Log.e("HotUpdate", "prepareInstallableApk failed", t)
+            return mapOf(
+                "success" to false,
+                "requires_restart" to false,
+                "message" to "android_apk_prepare_failed:${t.message ?: "unknown"}",
+            )
+        }
+
+        // 轻量 ZIP 头校验即可；不要在主线程对大包跑 getPackageArchiveInfo，部分机型会卡住导致 UI 停在 100%。
+        if (!looksLikeZipArchive(installFile)) {
+            return mapOf(
+                "success" to false,
+                "requires_restart" to false,
+                "message" to "android_apk_parse_failed",
+            )
+        }
+
+        // 对齐产品要求：下载完直接拉起系统安装页，不先跳「未知来源」授权页。
+        return launchSystemApkInstaller(installFile)
+    }
+
+    private fun prepareInstallableApk(source: File): File {
+        val dir = File(filesDir, "hot_update")
+        if (!dir.exists() && !dir.mkdirs()) {
+            throw IllegalStateException("hot_update_dir_create_failed")
+        }
+        val targetName = source.name.ifBlank { "hot_update.apk" }.let { name ->
+            if (name.lowercase().endsWith(".apk")) name else "$name.apk"
+        }
+        val target = File(dir, targetName)
+        if (source.canonicalFile.absolutePath == target.canonicalFile.absolutePath) {
+            return target
+        }
+        source.copyTo(target, overwrite = true)
+        return target
+    }
+
+    private fun looksLikeZipArchive(file: File): Boolean {
         return try {
-            val authority = "$packageName.hotupdate.fileprovider"
+            file.inputStream().use { input ->
+                val header = ByteArray(4)
+                val read = input.read(header)
+                read >= 4 &&
+                    header[0] == 0x50.toByte() &&
+                    header[1] == 0x4b.toByte() &&
+                    (header[2] == 0x03.toByte() ||
+                        header[2] == 0x05.toByte() ||
+                        header[2] == 0x07.toByte()) &&
+                    (header[3] == 0x04.toByte() ||
+                        header[3] == 0x06.toByte() ||
+                        header[3] == 0x08.toByte())
+            }
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
+    private fun launchSystemApkInstaller(file: File): Map<String, Any> {
+        return try {
+            val authority = "$packageName.provider"
             val uri = FileProvider.getUriForFile(this, authority, file)
             val intent = Intent(Intent.ACTION_VIEW).apply {
                 setDataAndType(uri, "application/vnd.android.package-archive")
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                clipData = ClipData.newRawUri(
+                    "application/vnd.android.package-archive",
+                    uri,
+                )
                 putExtra(Intent.EXTRA_NOT_UNKNOWN_SOURCE, true)
                 putExtra(Intent.EXTRA_INSTALLER_PACKAGE_NAME, packageName)
             }
 
-            if (intent.resolveActivity(packageManager) == null) {
-                mapOf(
-                    "success" to false,
-                    "requires_restart" to false,
-                    "message" to "android_installer_not_found",
+            // Android 11+ 包可见性可能导致 resolveActivity==null，不能据此放弃安装。
+            // 下载完成后必须主动 startActivity 拉起系统安装器。
+            try {
+                grantUriPermission(
+                    "com.android.packageinstaller",
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION,
                 )
-            } else {
-                startActivity(intent)
-                mapOf(
-                    "success" to true,
-                    "requires_restart" to true,
-                    "message" to "android_installer_opened",
-                )
+            } catch (_: Throwable) {
             }
+            try {
+                grantUriPermission(
+                    "com.google.android.packageinstaller",
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                )
+            } catch (_: Throwable) {
+            }
+
+            startActivity(intent)
+            clearPendingApkInstall()
+            Log.i("HotUpdate", "System APK installer launched: ${file.absolutePath}")
+            mapOf(
+                "success" to true,
+                "requires_restart" to true,
+                "message" to "android_installer_opened",
+            )
+        } catch (t: ActivityNotFoundException) {
+            Log.e("HotUpdate", "APK installer activity not found", t)
+            mapOf(
+                "success" to false,
+                "requires_restart" to false,
+                "message" to "android_installer_not_found",
+            )
         } catch (t: Throwable) {
+            // 不跳未知来源设置页；直接把失败原因回给上层，由用户在系统安装页自行处理。
+            Log.e("HotUpdate", "Launch APK installer failed", t)
             mapOf(
                 "success" to false,
                 "requires_restart" to false,
                 "message" to "android_installer_launch_failed:${t.message ?: "unknown"}",
             )
         }
+    }
+
+    private fun retryPendingApkInstallNow(): Map<String, Any> {
+        val pendingPath = getSharedPreferences(
+            pendingApkInstallPreferenceName,
+            Context.MODE_PRIVATE,
+        ).getString(pendingApkInstallPathKey, null)?.trim().orEmpty()
+        if (pendingPath.isEmpty()) {
+            return mapOf(
+                "success" to false,
+                "requires_restart" to false,
+                "message" to "android_pending_install_missing",
+            )
+        }
+        return installDownloadedApk(pendingPath)
     }
 
     private fun openPatchUrl(rawUrl: String): Map<String, Any> {
@@ -998,19 +1213,53 @@ class MainActivity : FlutterFragmentActivity() {
         }
     }
 
-    private fun openUnknownAppsSettings(): Boolean {
-        return try {
-            val intent = Intent(
-                Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
-                Uri.parse("package:$packageName"),
-            ).apply {
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            }
-            startActivity(intent)
-            true
-        } catch (_: Throwable) {
-            false
+    private fun retryPendingApkInstallIfAllowed() {
+        val pendingPath = getSharedPreferences(
+            pendingApkInstallPreferenceName,
+            Context.MODE_PRIVATE,
+        ).getString(pendingApkInstallPathKey, null)?.trim().orEmpty()
+        if (pendingPath.isEmpty() || pendingApkInstallRetryScheduled) {
+            return
         }
+
+        pendingApkInstallRetryScheduled = true
+        mainHandler.postDelayed({
+            pendingApkInstallRetryScheduled = false
+            if (!isActivityResumed) {
+                return@postDelayed
+            }
+
+            val latestPath = getSharedPreferences(
+                pendingApkInstallPreferenceName,
+                Context.MODE_PRIVATE,
+            ).getString(pendingApkInstallPathKey, null)?.trim().orEmpty()
+            if (latestPath.isEmpty()) return@postDelayed
+
+            // 同样直接拉安装器，不检查/跳转未知来源权限页。
+            val result = installDownloadedApk(latestPath)
+            if (result["success"] == true) {
+                Log.i("HotUpdate", "Pending APK install resumed successfully")
+            } else {
+                Log.w(
+                    "HotUpdate",
+                    "Pending APK install retry failed: ${result["message"]}",
+                )
+            }
+        }, 350)
+    }
+
+    private fun savePendingApkInstall(localFilePath: String) {
+        getSharedPreferences(
+            pendingApkInstallPreferenceName,
+            Context.MODE_PRIVATE,
+        ).edit().putString(pendingApkInstallPathKey, localFilePath).apply()
+    }
+
+    private fun clearPendingApkInstall() {
+        getSharedPreferences(
+            pendingApkInstallPreferenceName,
+            Context.MODE_PRIVATE,
+        ).edit().remove(pendingApkInstallPathKey).apply()
     }
 
     private fun requestVendorToken(channel: String): Pair<Boolean, String> {

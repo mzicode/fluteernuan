@@ -78,6 +78,36 @@ void main() {
     expect(sent, ['IME send']);
   });
 
+  testWidgets('editing the draft never sends a message', (tester) async {
+    final controller = TextEditingController();
+    final focusNode = FocusNode();
+    final sent = <String>[];
+    addTearDown(controller.dispose);
+    addTearDown(focusNode.dispose);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ChatInputBar(
+            controller: controller,
+            focusNode: focusNode,
+            onSend: (value, {refocusInput}) => sent.add(value),
+          ),
+        ),
+      ),
+    );
+
+    final input = find.byKey(const Key('chat_message_input'));
+    await tester.enterText(input, 'pasted message');
+    controller.value = const TextEditingValue(
+      text: 'pasted message\n',
+      selection: TextSelection.collapsed(offset: 15),
+    );
+    await tester.pump();
+
+    expect(sent, isEmpty);
+  });
+
   testWidgets('shows send button for an empty draft with pending attachments',
       (tester) async {
     final controller = TextEditingController();

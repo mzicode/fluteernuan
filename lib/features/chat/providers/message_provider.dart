@@ -37,7 +37,13 @@ import '../../../core/services/storage/isar_service.dart';
 import '../../../shared/widgets/avatar_widget.dart';
 import '../widgets/message_bubble.dart' show WalletBubbleRefreshNotifier;
 import '../utils/call_preview_formatter.dart';
+import '../utils/system_message_text.dart';
+import '../utils/message_content_preview.dart';
 import '../services/emoji_store_service.dart';
+
+bool _isMemberMuteApiMessage(api.Message message) {
+  return isMemberMuteSystemMessage(message.content.text ?? '');
+}
 
 String _messageProviderText({
   required String zhCN,
@@ -420,6 +426,8 @@ class MessageItem {
   final String senderVipBadge;
   final String senderVipBadgeIcon;
   final bool senderVipActive;
+  final int senderRole;
+  final bool senderOfficial;
   final MessageItemType type;
   final String content;
   final String? mediaId;
@@ -475,6 +483,8 @@ class MessageItem {
     this.senderVipBadge = '',
     this.senderVipBadgeIcon = '',
     this.senderVipActive = false,
+    this.senderRole = 0,
+    this.senderOfficial = false,
     this.type = MessageItemType.text,
     required this.content,
     this.mediaId,
@@ -530,6 +540,8 @@ class MessageItem {
     String? senderVipBadge,
     String? senderVipBadgeIcon,
     bool? senderVipActive,
+    int? senderRole,
+    bool? senderOfficial,
     MessageItemType? type,
     String? content,
     String? mediaId,
@@ -586,6 +598,8 @@ class MessageItem {
       senderVipBadge: senderVipBadge ?? this.senderVipBadge,
       senderVipBadgeIcon: senderVipBadgeIcon ?? this.senderVipBadgeIcon,
       senderVipActive: senderVipActive ?? this.senderVipActive,
+      senderRole: senderRole ?? this.senderRole,
+      senderOfficial: senderOfficial ?? this.senderOfficial,
       type: type ?? this.type,
       content: content ?? this.content,
       mediaId: mediaId ?? this.mediaId,
@@ -793,10 +807,18 @@ class MessageItem {
 
     ReplyInfo? replyTo;
     if (msg.replyTo != null) {
+      final replyType = replyContentTypeFromRaw(
+        msg.replyTo!.msgType,
+        msg.replyTo!.content,
+      );
       replyTo = ReplyInfo(
         messageId: msg.replyTo!.msgId,
         senderName: msg.replyTo!.senderName,
-        content: msg.replyTo!.content,
+        content: resolveReplyPreviewText(
+          content: msg.replyTo!.content,
+          contentType: replyType,
+        ),
+        contentType: replyType,
       );
     }
 
@@ -823,6 +845,8 @@ class MessageItem {
       senderVipBadge: msg.senderVipBadge,
       senderVipBadgeIcon: msg.senderVipBadgeIcon,
       senderVipActive: msg.senderVipActive,
+      senderRole: msg.senderRole,
+      senderOfficial: msg.senderOfficial,
       type: type,
       content: content,
       mediaId: mediaId,
@@ -874,10 +898,16 @@ class MessageItem {
   factory MessageItem.fromMessageModel(MessageModel m) {
     ReplyInfo? replyTo;
     if (m.replyToId != null && m.replyToId!.isNotEmpty) {
+      final preview = m.replyToPreview ?? '';
+      final replyType = replyContentTypeFromRaw(null, preview);
       replyTo = ReplyInfo(
         messageId: m.replyToId!,
         senderName: '',
-        content: m.replyToPreview ?? '',
+        content: resolveReplyPreviewText(
+          content: preview,
+          contentType: replyType,
+        ),
+        contentType: replyType,
       );
     }
 
@@ -918,10 +948,6 @@ class MessageItem {
     }
 
     var cachedType = _msgTypeToItemType(m.type);
-    if (cachedType == MessageItemType.text &&
-        _isForwardBundleEncodedContent(m.content)) {
-      cachedType = MessageItemType.forwardBundle;
-    }
 
     return MessageItem(
       id: m.id,
@@ -969,6 +995,10 @@ class MessageItem {
   }
 
   bool get shouldHideBurnContent => burnAfterRead && burnLocked && !isOutgoing;
+
+  /// 红包是一次性资金消息，只能引用或删除，不能再转发成一条新红包。
+  bool get isForwardableContent =>
+      !burnAfterRead && type != MessageItemType.redPacket;
 }
 
 int _latestReadableSeqBeforeLockedBurn(
@@ -1036,18 +1066,6 @@ List<MessageItem> debugApplyBurnedReceipt(
   int burnedThroughSeq,
 ) =>
     _applyBurnedReceipt(messages, burnedThroughSeq);
-
-bool _isForwardBundleEncodedContent(String content) {
-  if (!content.trimLeft().startsWith('{')) return false;
-  try {
-    final decoded = jsonDecode(content);
-    return decoded is Map &&
-        decoded['items'] is List &&
-        decoded['title'] != null;
-  } catch (_) {
-    return false;
-  }
-}
 
 MsgType _itemTypeToStorageMsgType(MessageItemType type) {
   switch (type) {
@@ -1217,11 +1235,14 @@ class ReplyInfo {
   final String messageId;
   final String senderName;
   final String content;
+  /// 被引用消息类型；用于红包/转账等在 content 被服务端改写后仍正确展示。
+  final MessageItemType? contentType;
 
   const ReplyInfo({
     required this.messageId,
     required this.senderName,
     required this.content,
+    this.contentType,
   });
 }
 
@@ -1467,6 +1488,26 @@ List<MessageItem> _dedupeReliableMessageWindow(List<MessageItem> messages) {
   return result;
 }
 
+List<MessageItem> _filterRevokedMessages(
+  Iterable<MessageItem> messages,
+  Set<String> deletedIds,
+) =>
+    messages
+        .where(
+          (message) =>
+              !message.isDeleted &&
+              !deletedIds.contains(message.id) &&
+              !isMemberMuteSystemMessage(message.content),
+        )
+        .toList();
+
+@visibleForTesting
+List<MessageItem> debugFilterRevokedMessages(
+  List<MessageItem> messages,
+  Set<String> deletedIds,
+) =>
+    _filterRevokedMessages(messages, deletedIds);
+
 @visibleForTesting
 List<MessageItem> debugDedupeReliableMessageWindow(
   List<MessageItem> messages,
@@ -1648,6 +1689,10 @@ Map<String, dynamic> _messageItemToCacheJson(MessageItem msg) => {
               'message_id': msg.replyTo!.messageId,
               'sender_name': msg.replyTo!.senderName,
               'content': msg.replyTo!.content,
+              if (msg.replyTo!.contentType != null)
+                'msg_type': rawMsgTypeForMessageItemType(
+                  msg.replyTo!.contentType!,
+                ),
             },
       'bot_reply_markup': msg.botReplyMarkup?.toJson(),
       'mentions': msg.mentions,
@@ -1683,12 +1728,24 @@ MessageItem? _messageItemFromCacheJson(Object? raw) {
     ReplyInfo? replyTo;
     if (replyRaw is Map) {
       final reply = Map<String, dynamic>.from(replyRaw);
-      final messageId = reply['message_id']?.toString() ?? '';
+      final messageId =
+          (reply['message_id'] ?? reply['msg_id'] ?? reply['id'] ?? '')
+              .toString();
       if (messageId.isNotEmpty) {
+        final rawContent = reply['content']?.toString() ?? '';
+        final rawType = reply['msg_type'] ?? reply['type'] ?? reply['content_type'];
+        final msgType = rawType is int
+            ? rawType
+            : int.tryParse(rawType?.toString() ?? '');
+        final replyType = replyContentTypeFromRaw(msgType, rawContent);
         replyTo = ReplyInfo(
           messageId: messageId,
           senderName: reply['sender_name']?.toString() ?? '',
-          content: reply['content']?.toString() ?? '',
+          content: resolveReplyPreviewText(
+            content: rawContent,
+            contentType: replyType,
+          ),
+          contentType: replyType,
         );
       }
     }
@@ -1803,7 +1860,7 @@ class MessageMemoryWindowCache {
     if (entry == null) return const [];
     entry.touchedAt = DateTime.now();
     _entries[key] = entry;
-    return List<MessageItem>.of(entry.messages);
+    return entry.messages.where((message) => !message.isDeleted).toList();
   }
 
   static void write({
@@ -1816,7 +1873,7 @@ class MessageMemoryWindowCache {
     final merged = <String, MessageItem>{};
     _entries.remove(key);
     for (final message in messages) {
-      if (message.chatId == chatId) {
+      if (message.chatId == chatId && !message.isDeleted) {
         merged[message.id] = message;
       }
     }
@@ -2118,12 +2175,7 @@ class MessageListNotifier extends StateNotifier<List<MessageItem>> {
     this._currentUserId, {
     void Function(String message)? onSendFailure,
   })  : _onSendFailure = onSendFailure,
-        super(
-          MessageMemoryWindowCache.read(
-            accountId: _currentUserId,
-            chatId: chatId,
-          ),
-        ) {
+        super(const []) {
     _persistenceBatcher = MessagePersistenceBatcher(_persistMessagesNow);
     _hasLoadedInitial = state.isNotEmpty;
     _setupWebSocketHandlers();
@@ -2161,6 +2213,15 @@ class MessageListNotifier extends StateNotifier<List<MessageItem>> {
         _refreshPrivateMediaAccess(forceRefresh: forceRefresh),
       ),
     );
+  }
+
+  /// 聊天图片空白时由气泡组件主动换签，不等 5 分钟周期。
+  Future<void> refreshPrivateMediaAccess({
+    bool forceRefresh = true,
+  }) async {
+    if (!mounted) return;
+    _privateMediaRefreshDebounce?.cancel();
+    await _refreshPrivateMediaAccess(forceRefresh: forceRefresh);
   }
 
   Future<void> _refreshPrivateMediaAccess({
@@ -2203,6 +2264,24 @@ class MessageListNotifier extends StateNotifier<List<MessageItem>> {
           );
         }
       }
+      final missing = ids.where((id) => !resolved.containsKey(id)).toList();
+      if (missing.isNotEmpty) {
+        await Future<void>.delayed(const Duration(milliseconds: 600));
+        if (!mounted) return;
+        try {
+          resolved.addAll(
+            await _s3DirectUpload.resolveAccessURLs(
+              missing,
+              forceRefresh: true,
+            ),
+          );
+        } catch (error) {
+          debugPrint(
+            '[Message] Resolve private media retry failed: '
+            'count=${missing.length} error=$error',
+          );
+        }
+      }
       if (!mounted || resolved.isEmpty) return;
       var changed = false;
       final next = state.map((message) {
@@ -2236,17 +2315,18 @@ class MessageListNotifier extends StateNotifier<List<MessageItem>> {
     }
   }
 
-  bool _hydrateFromMemoryCache() {
+  bool _hydrateFromMemoryCache(Set<String> deletedIds) {
     if (state.isNotEmpty) return false;
     final cached = MessageMemoryWindowCache.read(
       accountId: _currentUserId,
       chatId: chatId,
     );
-    if (cached.isEmpty) return false;
-    state = _mergeLoadedMessages(cached);
+    final visibleCached = _filterRevokedMessages(cached, deletedIds);
+    if (visibleCached.isEmpty) return false;
+    state = _mergeLoadedMessages(visibleCached);
     _reconcileBurnStateFromCurrentMessages();
     PerformanceTraceService.mark(
-      'message_memory_hit chat=$chatId count=${cached.length}',
+      'message_memory_hit chat=$chatId count=${visibleCached.length}',
     );
     return true;
   }
@@ -2465,6 +2545,12 @@ class MessageListNotifier extends StateNotifier<List<MessageItem>> {
     String source = 'realtime',
   }) {
     if (!mounted || message.chatId != chatId) return;
+    if (_isMemberMuteApiMessage(message)) {
+      debugPrint(
+        '[Message] Suppressed member mute system notice: ${message.msgId}',
+      );
+      return;
+    }
     if (_pendingSendGuard.isCancelled(message.msgId)) {
       if (message.senderId == _currentUserId) {
         unawaited(_chatService.revokeMessage(chatId, message.msgId));
@@ -2516,6 +2602,9 @@ class MessageListNotifier extends StateNotifier<List<MessageItem>> {
     final fallback = <api.Message>[];
 
     for (final message in messages) {
+      if (_isMemberMuteApiMessage(message)) {
+        continue;
+      }
       if (_pendingSendGuard.isCancelled(message.msgId)) {
         if (message.senderId == _currentUserId) {
           unawaited(_chatService.revokeMessage(chatId, message.msgId));
@@ -3039,6 +3128,7 @@ class MessageListNotifier extends StateNotifier<List<MessageItem>> {
 
   void _addNewMessage(api.Message message) {
     if (!mounted) return;
+    if (_isMemberMuteApiMessage(message)) return;
 
     final existingIndex = state.indexWhere((msg) => msg.id == message.msgId);
     if (existingIndex >= 0) {
@@ -3246,6 +3336,11 @@ class MessageListNotifier extends StateNotifier<List<MessageItem>> {
       }
       return msg;
     }).toList();
+    _rememberCurrentWindow();
+    unawaited(_addToDeletedMessages(msgId));
+    unawaited(_saveMessagesToLocal(
+      state.where((message) => message.id == msgId).toList(),
+    ));
   }
 
   void _markMessageAsRevoked(String msgId) =>
@@ -3393,6 +3488,7 @@ class MessageListNotifier extends StateNotifier<List<MessageItem>> {
               (msg) => MessageItem.fromApiMessage(msg, _currentUserId),
             )
             .where((msg) => !deletedIds.contains(msg.id))
+            .where((msg) => !isMemberMuteSystemMessage(msg.content))
             .toList();
 
         final mergedCount = _mergeSyncedMessages(newMessages);
@@ -3474,7 +3570,7 @@ class MessageListNotifier extends StateNotifier<List<MessageItem>> {
       final seen = <String>{};
       final deduped = <MessageModel>[];
       for (final m in list) {
-        if (deletedIds.contains(m.id)) {
+        if (deletedIds.contains(m.id) || m.isDeleted) {
           continue;
         }
         if (seen.add(m.id)) {
@@ -3485,18 +3581,6 @@ class MessageListNotifier extends StateNotifier<List<MessageItem>> {
       final parsedItems = deduped.map((m) {
         var item = MessageItem.fromMessageModel(m);
         item = _applyPersistedBurnState(item);
-        if (item.type == MessageItemType.text && item.content.startsWith('{')) {
-          try {
-            final json = jsonDecode(item.content) as Map<String, dynamic>;
-            if (json.containsKey('total_amount') ||
-                json.containsKey('red_packet_id')) {
-              item = item.copyWith(type: MessageItemType.redPacket);
-            } else if (json.containsKey('receiver_id') &&
-                json.containsKey('amount')) {
-              item = item.copyWith(type: MessageItemType.transfer);
-            }
-          } catch (_) {}
-        }
         if (item.status == MessageStatus.sending) {
           final age = DateTime.now().difference(item.createdAt);
           if (age.inMinutes >= 2) {
@@ -3534,21 +3618,9 @@ class MessageListNotifier extends StateNotifier<List<MessageItem>> {
           .map(_messageItemFromCacheJson)
           .whereType<MessageItem>()
           .where((msg) => msg.chatId == chatId)
-          .where((msg) => !deletedIds.contains(msg.id))
+          .where((msg) => !deletedIds.contains(msg.id) && !msg.isDeleted)
           .map((msg) {
         var item = _applyPersistedBurnState(msg);
-        if (item.type == MessageItemType.text && item.content.startsWith('{')) {
-          try {
-            final json = jsonDecode(item.content) as Map<String, dynamic>;
-            if (json.containsKey('total_amount') ||
-                json.containsKey('red_packet_id')) {
-              item = item.copyWith(type: MessageItemType.redPacket);
-            } else if (json.containsKey('receiver_id') &&
-                json.containsKey('amount')) {
-              item = item.copyWith(type: MessageItemType.transfer);
-            }
-          } catch (_) {}
-        }
         if (item.status == MessageStatus.sending) {
           final age = DateTime.now().difference(item.createdAt);
           if (age.inMinutes >= 2) {
@@ -3573,7 +3645,9 @@ class MessageListNotifier extends StateNotifier<List<MessageItem>> {
   Future<void> _writeMessagesToWebCache(List<MessageItem> messages) async {
     if (_currentUserId.isEmpty) return;
     try {
-      final normalized = _dedupeWalletMessages([...messages]);
+      final normalized = _dedupeWalletMessages(
+        messages.where((message) => !message.isDeleted).toList(),
+      );
       final limited = normalized.take(100).toList();
       final prefs = await SharedPreferences.getInstance();
       if (limited.isEmpty) {
@@ -3607,12 +3681,18 @@ class MessageListNotifier extends StateNotifier<List<MessageItem>> {
 
       final byId = <String, MessageItem>{
         for (final msg in existing.where(
-          (msg) => msg.chatId == chatId && !deletedIds.contains(msg.id),
+          (msg) =>
+              msg.chatId == chatId &&
+              !deletedIds.contains(msg.id) &&
+              !msg.isDeleted,
         ))
           msg.id: msg,
       };
       for (final msg in messages.where(
-        (msg) => msg.chatId == chatId && !deletedIds.contains(msg.id),
+        (msg) =>
+            msg.chatId == chatId &&
+            !deletedIds.contains(msg.id) &&
+            !msg.isDeleted,
       )) {
         byId[msg.id] = msg;
       }
@@ -3627,19 +3707,23 @@ class MessageListNotifier extends StateNotifier<List<MessageItem>> {
       _dedupeReliableMessageWindow(messages);
 
   List<MessageItem> _mergeLoadedMessages(List<MessageItem> loadedMessages) {
-    if (state.isEmpty) return _dedupeWalletMessages(loadedMessages);
+    final filteredLoaded = loadedMessages
+        .where((msg) => !isMemberMuteSystemMessage(msg.content))
+        .toList(growable: false);
+    if (state.isEmpty) return _dedupeWalletMessages(filteredLoaded);
 
-    final loadedIds = loadedMessages.map((m) => m.id).toSet();
+    final loadedIds = filteredLoaded.map((m) => m.id).toSet();
     final loadedWalletKeys =
-        loadedMessages.map(_walletMessageKey).whereType<String>().toSet();
+        filteredLoaded.map(_walletMessageKey).whereType<String>().toSet();
     DateTime? newestLoadedTime;
-    for (final msg in loadedMessages) {
+    for (final msg in filteredLoaded) {
       if (newestLoadedTime == null || msg.createdAt.isAfter(newestLoadedTime)) {
         newestLoadedTime = msg.createdAt;
       }
     }
 
     final transientMessages = state.where((msg) {
+      if (isMemberMuteSystemMessage(msg.content)) return false;
       if (loadedIds.contains(msg.id)) return false;
       final walletKey = _walletMessageKey(msg);
       if (walletKey != null && loadedWalletKeys.contains(walletKey)) {
@@ -3655,7 +3739,7 @@ class MessageListNotifier extends StateNotifier<List<MessageItem>> {
       return false;
     }).toList();
 
-    return _dedupeWalletMessages([...transientMessages, ...loadedMessages]);
+    return _dedupeWalletMessages([...transientMessages, ...filteredLoaded]);
   }
 
   /// Load messages from the server while showing cached local messages first.
@@ -3664,7 +3748,8 @@ class MessageListNotifier extends StateNotifier<List<MessageItem>> {
     final loadSpan = PerformanceTraceService.start('message.loadMessages');
 
     try {
-      final memoryHit = _hydrateFromMemoryCache();
+      final deletedIds = await _getDeletedMessageIds();
+      final memoryHit = _hydrateFromMemoryCache(deletedIds);
       final localFuture = memoryHit ? Future<void>.value() : _loadFromLocal();
       if (memoryHit) {
         unawaited(_loadFromLocal());
@@ -3681,7 +3766,7 @@ class MessageListNotifier extends StateNotifier<List<MessageItem>> {
 
       if (hasLocalWindow) {
         await _mergeServerMessages(
-          deletedIdsFuture: _getDeletedMessageIds(),
+          deletedIdsFuture: Future<Set<String>>.value(deletedIds),
           responseFuture: _chatService.getMessages(chatId, limit: 30),
           localMaxSeq: localMaxSeq,
         );
@@ -3690,7 +3775,7 @@ class MessageListNotifier extends StateNotifier<List<MessageItem>> {
         await _backfillInitialHistoryWindow();
       } else {
         await _mergeServerMessages(
-          deletedIdsFuture: _getDeletedMessageIds(),
+          deletedIdsFuture: Future<Set<String>>.value(deletedIds),
           responseFuture: _chatService.getMessages(chatId, limit: 30),
           localMaxSeq: localMaxSeq,
         );
@@ -3720,6 +3805,14 @@ class MessageListNotifier extends StateNotifier<List<MessageItem>> {
       if (!mounted) return;
 
       if (response.isSuccess && response.data != null) {
+        if (response.data!.isEmpty) {
+          // A successful empty server window is authoritative: the chat
+          // history was cleared remotely, so stale local messages must not be
+          // rendered again on the next entry.
+          await _clearHistoryFromServerEmpty();
+          return;
+        }
+
         // Keep local timestamps so server createdAt values do not reorder failed local messages.
         final localTimeMap = <String, DateTime>{};
         for (final msg in state) {
@@ -3738,6 +3831,7 @@ class MessageListNotifier extends StateNotifier<List<MessageItem>> {
               return item;
             })
             .where((msg) => !deletedIds.contains(msg.id))
+            .where((msg) => !isMemberMuteSystemMessage(msg.content))
             .toList();
 
         if (localMaxSeq == 0 || messages.isNotEmpty) {
@@ -3760,6 +3854,23 @@ class MessageListNotifier extends StateNotifier<List<MessageItem>> {
     } catch (e) {
       debugPrint('[Message] merge server messages error: $e');
     }
+  }
+
+  Future<void> _clearHistoryFromServerEmpty() async {
+    final pending = state
+        .where(
+          (message) =>
+              message.status == MessageStatus.sending ||
+              message.status == MessageStatus.failed,
+        )
+        .toList(growable: false);
+
+    await _clearHistoryFromEvent();
+    if (!mounted || pending.isEmpty) return;
+
+    state = pending;
+    _rememberCurrentWindow();
+    await _persistMessagesNow(pending);
   }
 
   Future<void> _backfillInitialHistoryWindow() async {
@@ -3790,6 +3901,7 @@ class MessageListNotifier extends StateNotifier<List<MessageItem>> {
             ),
           )
           .where((msg) => !deletedIds.contains(msg.id))
+          .where((msg) => !isMemberMuteSystemMessage(msg.content))
           .toList()
         ..sort(_compareMessagesNewestFirst);
 
@@ -3876,6 +3988,7 @@ class MessageListNotifier extends StateNotifier<List<MessageItem>> {
               (msg) => MessageItem.fromApiMessage(msg, _currentUserId),
             )
             .where((msg) => !deletedIds.contains(msg.id))
+            .where((msg) => !isMemberMuteSystemMessage(msg.content))
             .toList();
 
         messages.sort(_compareMessagesNewestFirst);
@@ -3921,7 +4034,9 @@ class MessageListNotifier extends StateNotifier<List<MessageItem>> {
     try {
       final deletedIds = await _getDeletedMessageIds();
       final visibleMessages = messages
-          .where((message) => !deletedIds.contains(message.id))
+          .where(
+            (message) => !deletedIds.contains(message.id) && !message.isDeleted,
+          )
           .toList();
       if (visibleMessages.isEmpty) return;
 
@@ -4102,6 +4217,9 @@ class MessageListNotifier extends StateNotifier<List<MessageItem>> {
             senderId: '',
             senderName: replyTo.senderName,
             content: replyTo.content,
+            msgType: replyTo.contentType == null
+                ? null
+                : rawMsgTypeForMessageItemType(replyTo.contentType!),
           );
         }
 
@@ -6026,6 +6144,8 @@ class MessageListNotifier extends StateNotifier<List<MessageItem>> {
   }
 
   Future<void> _addToDeletedMessages(String messageId) async {
+    _cachedDeletedIds ??= <String>{};
+    _cachedDeletedIds!.add(messageId);
     try {
       final prefs = await SharedPreferences.getInstance();
       final key = _deletedMessagesStorageKey;
@@ -6445,7 +6565,7 @@ class MessageListNotifier extends StateNotifier<List<MessageItem>> {
               (item) => item?.id == messageId,
               orElse: () => null,
             );
-    if (localMessage?.burnAfterRead == true) {
+    if (localMessage != null && !localMessage.isForwardableContent) {
       return false;
     }
 
@@ -6471,6 +6591,10 @@ class MessageListNotifier extends StateNotifier<List<MessageItem>> {
       if (id.isNotEmpty && seen.add(id)) uniqueMessageIds.add(id);
     }
     if (uniqueMessageIds.length < 2) return false;
+    final byId = {for (final item in state) item.id: item};
+    if (uniqueMessageIds.any((id) => byId[id]?.type == MessageItemType.redPacket)) {
+      return false;
+    }
     final response = await _chatService.forwardBundle(
       sourceChatId: chatId,
       sourceMsgIds: uniqueMessageIds,
@@ -7173,6 +7297,8 @@ class MessageListNotifier extends StateNotifier<List<MessageItem>> {
   }
 
   void addSystemMessage({required String content, String? messageId}) {
+    if (isMemberMuteSystemMessage(content)) return;
+
     final normalizedId = messageId?.trim();
     final localId = normalizedId != null && normalizedId.isNotEmpty
         ? normalizedId

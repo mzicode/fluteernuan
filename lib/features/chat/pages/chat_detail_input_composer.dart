@@ -288,24 +288,7 @@ extension _ChatDetailInputComposer on _ChatDetailPageState {
 
   /// 获取消息预览文本
   String _getMessagePreview(MessageItem message) {
-    switch (message.type) {
-      case MessageItemType.text:
-        return message.content;
-      case MessageItemType.image:
-        return _localizedText(zhCN: '📷 图片', zhTW: '📷 圖片', en: '📷 Photo');
-      case MessageItemType.video:
-        return _localizedText(zhCN: '🎬 视频', zhTW: '🎬 影片', en: '🎬 Video');
-      case MessageItemType.voice:
-        return _localizedText(
-          zhCN: '🎤 语音消息',
-          zhTW: '🎤 語音訊息',
-          en: '🎤 Voice message',
-        );
-      case MessageItemType.file:
-        return '📎 ${message.fileName ?? _localizedText(zhCN: '文件', zhTW: '檔案', en: 'File')}';
-      default:
-        return message.content;
-    }
+    return formatMessageContentPreview(message);
   }
 
   /// 发送消息（处理回复和编辑）。[content] 为可选，表情选择器会直接传入 emoji，否则用输入框内容。
@@ -536,11 +519,12 @@ extension _ChatDetailInputComposer on _ChatDetailPageState {
         this._cancelReply();
         return;
       }
-      // 发送带回复的消息
+      // 发送带回复的消息（引用预览必须是可读文案，不能塞红包/转账 JSON）
       final replyInfo = ReplyInfo(
         messageId: _replyToMessage!.id,
         senderName: _replyToMessage!.senderName,
-        content: _replyToMessage!.content,
+        content: formatMessageContentPreview(_replyToMessage!),
+        contentType: _replyToMessage!.type,
       );
       final mentions = _pendingMentionIds.isNotEmpty
           ? List<String>.from(_pendingMentionIds)

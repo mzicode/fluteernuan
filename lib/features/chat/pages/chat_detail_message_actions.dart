@@ -89,26 +89,10 @@ extension _ChatDetailMessageActions on _ChatDetailPageState {
           ? () => _handleReply(message)
           : null,
       onCopy: () => _handleCopy(message),
-      onTranslate: _canTranslateMessage(message)
-          ? () => _handleTranslateMessage(message)
-          : null,
-      translateLabel: _messageTranslations.containsKey(message.id)
-          ? _localizedText(zhCN: '隐藏翻译', zhTW: '隱藏翻譯', en: 'Hide translation')
-          : null,
       onForward:
           _canForwardMessage(message) ? () => _handleForward(message) : null,
-      onFavorite: _canFavoriteMessage(message)
-          ? () => _toggleFavoriteMessage(message)
-          : null,
       onDetails: !message.isDeleted && !message.burnAfterRead && message.seq > 0
           ? () => _openMessageDetails(message)
-          : null,
-      onReport: !message.isOutgoing &&
-              !message.isDeleted &&
-              message.type != MessageItemType.system &&
-              message.id.isNotEmpty &&
-              message.seq > 0
-          ? () => _openMessageReport(message)
           : null,
       onEdit:
           isWritable && message.isOutgoing ? () => _handleEdit(message) : null,

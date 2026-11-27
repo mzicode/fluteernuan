@@ -1,5 +1,6 @@
 // 文件用途：封装 HotUpdateSupportStatus 相关业务流程与外部能力调用，属于业务服务。
 // 核心逻辑：封装 HotUpdateSupportStatus 的外部能力调用，先校验输入和会话，再转换响应结果并向上层返回可处理的错误状态。
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:crypto/crypto.dart' as crypto;
@@ -100,6 +101,7 @@ class HotUpdateSdkAdapter {
     'com.customer/hot_update',
   );
   static const int _shorebirdAvailabilityRetryAttempts = 4;
+  static const Duration _installerChannelTimeout = Duration(seconds: 20);
   final Dio _downloadClient;
   final shorebird.ShorebirdUpdater _shorebirdUpdater;
   final bool _platformSupportsShorebird;
@@ -688,31 +690,22 @@ class HotUpdateSdkAdapter {
           );
         }
       }
+      final packageError = await _validateDownloadedApk(file);
+      if (packageError != null) {
+        await _safeDelete(file);
+        return HotUpdateApplyResult(
+          success: false,
+          requiresRestart: false,
+          message: packageError,
+        );
+      }
 
-      _emitProgress(
-        onProgress,
-        HotUpdateProgress(
-          phase: HotUpdateProgressPhase.launchingInstaller,
-          progress: 1,
-          message: _hotUpdateText(
-            zhCN: '校验完成，正在启动安装器...',
-            zhTW: '校驗完成，正在啟動安裝器...',
-            en: 'Verification complete. Launching installer...',
-          ),
-        ),
-      );
-      final result = await _channel.invokeMethod<dynamic>('applyPatch', {
-        'platform': 'android',
-        'local_file_path': file.path,
-        'file_name': fileName,
-        'patch_url': uri.toString(),
-      });
-
-      // 启动外部安装器后不能立即删除 APK，原生侧仍需通过 FileProvider 读取它。
-      return _parseApplyResult(
-        result,
-        defaultMessage: 'android_installer_opened',
-        defaultRequiresRestart: true,
+      // 下载+校验完成后必须直接拉起系统安装器，不走未知来源授权页。
+      return _launchAndroidInstaller(
+        localFilePath: file.path,
+        fileName: fileName,
+        patchUrl: uri.toString(),
+        onProgress: onProgress,
       );
     } on DioException catch (e) {
       debugPrint('[HotUpdateSDK] Android patch download failed: $e');
@@ -727,6 +720,64 @@ class HotUpdateSdkAdapter {
         success: false,
         requiresRestart: false,
         message: e.toString(),
+      );
+    }
+  }
+
+  Future<HotUpdateApplyResult> _launchAndroidInstaller({
+    required String localFilePath,
+    required String fileName,
+    required String patchUrl,
+    HotUpdateProgressCallback? onProgress,
+  }) async {
+    _emitProgress(
+      onProgress,
+      HotUpdateProgress(
+        phase: HotUpdateProgressPhase.launchingInstaller,
+        progress: 1,
+        message: _hotUpdateText(
+          zhCN: '下载完成，正在打开系统安装器...',
+          zhTW: '下載完成，正在打開系統安裝器...',
+          en: 'Download complete. Opening the system installer...',
+        ),
+      ),
+    );
+
+    try {
+      final result = await _channel
+          .invokeMethod<dynamic>('applyPatch', {
+            'platform': 'android',
+            'local_file_path': localFilePath,
+            'file_name': fileName,
+            'patch_url': patchUrl,
+          })
+          .timeout(_installerChannelTimeout);
+
+      // 启动外部安装器后不能立即删除 APK，原生侧仍需通过 FileProvider 读取它。
+      return _parseApplyResult(
+        result,
+        defaultMessage: 'android_installer_opened',
+        defaultRequiresRestart: true,
+      );
+    } on TimeoutException {
+      debugPrint('[HotUpdateSDK] Android install channel timed out');
+      return const HotUpdateApplyResult(
+        success: false,
+        requiresRestart: false,
+        message: 'android_installer_launch_timeout',
+      );
+    } on MissingPluginException {
+      return const HotUpdateApplyResult(
+        success: false,
+        requiresRestart: false,
+        message: 'hot_update_sdk_not_available',
+      );
+    } catch (e) {
+      debugPrint('[HotUpdateSDK] Android install invoke failed: $e');
+      return HotUpdateApplyResult(
+        success: false,
+        requiresRestart: false,
+        message: 'android_installer_launch_failed:$e',
       );
     }
   }
@@ -962,6 +1013,31 @@ class HotUpdateSdkAdapter {
       return 'patch_hash_mismatch';
     }
 
+    return null;
+  }
+
+  Future<String?> _validateDownloadedApk(File file) async {
+    try {
+      final length = await file.length();
+      if (length < 4096) {
+        return 'downloaded_apk_invalid';
+      }
+
+      final header = await file.openRead(0, 4).fold<List<int>>(
+        <int>[],
+        (bytes, chunk) => bytes..addAll(chunk),
+      );
+      if (header.length < 4 ||
+          header[0] != 0x50 ||
+          header[1] != 0x4b ||
+          (header[2] != 0x03 && header[2] != 0x05 && header[2] != 0x07) ||
+          (header[3] != 0x04 && header[3] != 0x06 && header[3] != 0x08)) {
+        return 'downloaded_apk_invalid';
+      }
+    } catch (e) {
+      debugPrint('[HotUpdateSDK] APK validation failed: $e');
+      return 'downloaded_apk_unreadable';
+    }
     return null;
   }
 

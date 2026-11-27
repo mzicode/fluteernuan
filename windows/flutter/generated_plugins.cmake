@@ -4,6 +4,7 @@
 
 list(APPEND FLUTTER_PLUGIN_LIST
   agora_rtc_engine
+  alog_windows
   audioplayers_windows
   connectivity_plus
   desktop_drop
@@ -19,6 +20,7 @@ list(APPEND FLUTTER_PLUGIN_LIST
   isar_flutter_libs
   livekit_client
   local_auth_windows
+  nertc_core
   pasteboard
   permission_handler_windows
   record_windows

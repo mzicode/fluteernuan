@@ -1,6 +1,7 @@
 // 文件用途：封装 android callkit helper 相关业务流程与外部能力调用，属于业务服务。
 // 核心逻辑：封装 android callkit helper 的外部能力调用，先校验输入和会话，再转换响应结果并向上层返回可处理的错误状态。
 import 'package:flutter/foundation.dart';
+import 'package:device_info_plus/device_info_plus.dart';
 import 'package:flutter_callkit_incoming/entities/entities.dart';
 import 'package:flutter_callkit_incoming/flutter_callkit_incoming.dart';
 import 'package:uuid/uuid.dart';
@@ -18,6 +19,58 @@ const bool _silentCallQaRequested = bool.fromEnvironment(
 // Release/TestFlight builds must always publish and subscribe to call audio,
 // even if a stale build command accidentally carries the QA dart-define.
 const bool kSilentCallQaMode = !kReleaseMode && _silentCallQaRequested;
+
+/// The plugin's connected broadcast does not stop its native ringtone.
+/// Hide only this call on Xiaomi, without ending the active business call.
+Future<void> stopXiaomiIncomingCallkitTone({
+  required int? callId,
+  required String? sessionId,
+  required bool Function() isCurrentCall,
+  Future<bool> Function()? isXiaomiDevice,
+}) async {
+  if (kIsWeb ||
+      defaultTargetPlatform != TargetPlatform.android ||
+      callId == null) {
+    return;
+  }
+  try {
+    final bool xiaomi;
+    if (isXiaomiDevice != null) {
+      xiaomi = await isXiaomiDevice();
+    } else {
+      final info = await DeviceInfoPlugin().androidInfo;
+      xiaomi = [info.manufacturer, info.brand].any(
+        (value) => const ['xiaomi', 'redmi', 'poco']
+            .contains(value.toLowerCase().trim()),
+      );
+    }
+    if (!xiaomi || !isCurrentCall()) return;
+    final active = await FlutterCallkitIncoming.activeCalls();
+    if (active is! List || active.isEmpty || !isCurrentCall()) return;
+    final ids = <String>{};
+    for (final call in active) {
+      if (call is! Map || call['extra'] is! Map) return;
+      final extra = call['extra'] as Map;
+      final activeSession = extra['session_id']?.toString().trim() ?? '';
+      final expectedSession = sessionId?.trim() ?? '';
+      // hideCallkitIncoming stops a shared native player. Never touch it if
+      // another call/session is active, even when our UUID is still present.
+      if ((extra['call_id'] ?? extra['callId'])?.toString() != '$callId' ||
+          (activeSession.isNotEmpty && activeSession != expectedSession)) {
+        return;
+      }
+      final id = call['id']?.toString().trim() ?? '';
+      if (id.isEmpty) return;
+      ids.add(id);
+    }
+    for (final id in ids) {
+      if (!isCurrentCall()) return;
+      await FlutterCallkitIncoming.hideCallkitIncoming(CallKitParams(id: id));
+    }
+  } catch (error) {
+    debugPrint('[CallKit] Xiaomi incoming tone cleanup failed: $error');
+  }
+}
 
 DateTime? parseIncomingCallExpiresAt(Object? rawExpiresAt) {
   final raw = rawExpiresAt?.toString().trim() ?? '';
@@ -171,7 +224,9 @@ CallKitParams buildAndroidIncomingCallParams(
     android: AndroidParams(
       isCustomNotification: true,
       isShowLogo: false,
-      ringtonePath: kSilentCallQaMode ? '' : 'system_ringtone_default',
+      // Prefer bundled raw/ringtone_default.mp3 — Samsung often fails or stays
+      // silent on system_ringtone_default URI lookup / STREAM_RING routing.
+      ringtonePath: kSilentCallQaMode ? '' : 'ringtone_default',
       backgroundColor: '#5865F2',
       backgroundUrl: '',
       actionColor: '#4CAF50',

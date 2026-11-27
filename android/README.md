@@ -25,7 +25,7 @@
 | 构建系统       | Gradle 8.14（Kotlin DSL） |
 | Android 插件   | Android Gradle Plugin 8.9.1 |
 | Kotlin         | 2.1.0 |
-| 最低/目标 SDK  | minSdk 29（Android 10+）/ targetSdk 36 / compileSdk 36 |
+| 最低/目标 SDK  | minSdk 27（Android 8.1+）/ targetSdk 36 / compileSdk 36 |
 | Java           | 17（sourceCompatibility / targetCompatibility / jvmTarget） |
 | Flutter 集成   | Flutter Gradle Plugin，Flutter 源码路径 `../..` |
 
@@ -33,7 +33,7 @@
 
 - **通知与后台**：`MainActivity` 中创建通知渠道 `customer_background`，供后台保活使用；Manifest 中声明前台服务、开机自启 Receiver（`flutter_background_service`）。
 - **权限**：网络、存储/媒体、相机、麦克风、蓝牙、唤醒锁、前台服务、通知等，在 `AndroidManifest.xml` 中声明。
-- **混淆**：`proguard-rules.pro` 中保留 Flutter、Agora、Gson、后台服务、通知等与 IM 相关的类。
+- **混淆**：`proguard-rules.pro` 中保留 Flutter、Agora、NERTC/云信、Gson、后台服务、通知等与 IM 相关的类。
 
 Flutter 侧 IM 能力（WebSocket、Dio、Isar、音视频等）由根目录 `pubspec.yaml` 管理，本目录不直接依赖这些库的源码。
 
@@ -184,9 +184,9 @@ cd android
 
 ### 7.3 注意事项
 
-- **minSdk 29**：支持 Android 10+；更低版本不在当前兼容与回归范围内。
-- **ABI**：当前仅保留 `arm64-v8a`，若需 x86_64（模拟器等），在 `defaultConfig.ndk.abiFilters` 中增加。
-- **签名**：Release 建议配置正式 keystore，避免长期使用 `signingConfigs.getByName("debug")`。
+- **minSdk 27**：支持 Android 8.1+；更低版本不在当前兼容与回归范围内。
+- **ABI**：当前仅保留 `arm64-v8a`，32 位 `armeabi-v7a` 暂不打包；若需 x86_64（模拟器等），在 `defaultConfig.ndk.abiFilters` 中增加。
+- **签名**：Release 必须使用正式 keystore，并同时开启 **V1 + V2 + V3**。OPPO/华为部分机型安装器仍依赖 JAR V1 签名，缺 V1 会报「解析软件包出现问题」。配置在 `app/build.gradle.kts` 的 `signingConfigs.release`：`enableV1Signing`、`enableV2Signing`、`enableV3Signing` 均为 `true`，后续改打包配置时不要删。
 
 ---
 

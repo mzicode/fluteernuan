@@ -1,5 +1,6 @@
 // 文件用途：实现 ChatPage 页面及其交互流程，属于聊天与消息。
 // 核心逻辑：维护 ChatPage 页面状态，响应用户操作并调用 Provider/Service；同时处理加载、成功、失败和返回导航。
+import 'dart:async';
 import 'package:universal_io/io.dart';
 import 'dart:ui';
 import 'package:flutter/material.dart';
@@ -22,6 +23,8 @@ import '../../../core/services/api/api_client.dart';
 import '../../../core/services/api/system_settings_service.dart';
 import '../../../core/services/performance_trace_service.dart';
 import '../../../core/services/notification_sound_service.dart';
+import '../../../core/services/android_notification_settings_service.dart';
+import '../../../core/services/call_service.dart';
 import '../../../core/services/time_zone_refresh_service.dart';
 import '../../../shared/widgets/avatar_widget.dart';
 import '../../../shared/widgets/animated_gif_image.dart';
@@ -38,6 +41,7 @@ import '../providers/chat_provider.dart';
 import '../providers/folder_provider.dart';
 import '../services/emoji_store_service.dart';
 import '../utils/call_preview_formatter.dart';
+import '../utils/system_message_text.dart';
 import '../../contacts/providers/contact_provider.dart';
 import '../../contacts/pages/friend_requests_page.dart';
 import '../../settings/pages/chat_settings_page.dart';
@@ -60,6 +64,8 @@ String _chatPageText(
   }
 }
 
+bool _incomingCallPermissionGuidanceShownThisSession = false;
+
 // 关键声明：chat page 是页面入口，负责组装局部状态、监听用户操作并把副作用交给 Provider/Service。
 class ChatPage extends ConsumerStatefulWidget {
   /// 是否作为桌面端侧边栏使用
@@ -79,12 +85,10 @@ class _ChatPageTitle extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final l10n = AppLocalizations(ref.watch(languageProvider));
+    // 仅首次无缓存冷启动显示「刷新中」；静默刷新 / 下拉刷新不改标题。
     final isLoading = ref.watch(chatListProvider.select((s) => s.isLoading));
-    final isSilentLoading = ref.watch(
-      chatListProvider.select((s) => s.isSilentLoading),
-    );
 
-    if (isLoading || isSilentLoading) {
+    if (isLoading) {
       return Row(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -143,6 +147,8 @@ class _MaybeGlassBlur extends StatelessWidget {
 class _ChatPageState extends ConsumerState<ChatPage>
     with WidgetsBindingObserver, AutomaticKeepAliveClientMixin {
   final Set<String> _selectedChatIds = {};
+  bool _incomingCallPermissionFlowRunning = false;
+  String? _incomingCallSettingsAwaitingReturn;
 
   @override
   bool get wantKeepAlive => true;
@@ -160,6 +166,11 @@ class _ChatPageState extends ConsumerState<ChatPage>
       PerformanceTraceService.mark('chat_page.first_post_frame');
       final authState = ref.read(authServiceProvider);
       if (authState.status == AuthStatus.authenticated) {
+        Future<void>.delayed(const Duration(milliseconds: 700), () {
+          if (mounted) {
+            _ensureIncomingCallPermissions();
+          }
+        });
         PerformanceTraceService.mark('chat_page.initialize_chat_list');
         _refreshOfficialSettings();
         // 优先初始化聊天列表（用户首先看到的内容）
@@ -208,20 +219,200 @@ class _ChatPageState extends ConsumerState<ChatPage>
     // 应用从后台恢复时自动刷新
     if (state == AppLifecycleState.resumed) {
       _refreshOnResume();
+      final awaiting = _incomingCallSettingsAwaitingReturn;
+      if (awaiting != null) {
+        _incomingCallSettingsAwaitingReturn = null;
+        Future<void>.delayed(const Duration(milliseconds: 500), () {
+          if (mounted) {
+            _continueIncomingCallPermissionFlow(awaiting);
+          }
+        });
+      }
     }
   }
+
+  Future<bool> _confirmIncomingCallPermission({
+    required String title,
+    required String body,
+    required String action,
+  }) async {
+    if (!mounted ||
+        WidgetsBinding.instance.lifecycleState != AppLifecycleState.resumed ||
+        ref.read(callServiceProvider).isInCall) return false;
+    return await showDialog<bool>(
+          context: context,
+          barrierDismissible: false,
+          builder: (dialogContext) => AlertDialog(
+            title: Text(title),
+            content: Text(body),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(dialogContext).pop(false),
+                child: Text(
+                  _chatPageText(
+                    dialogContext,
+                    zhCN: '暂不',
+                    zhTW: '暫不',
+                    en: 'Not now',
+                  ),
+                ),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.of(dialogContext).pop(true),
+                child: Text(action),
+              ),
+            ],
+          ),
+        ) ??
+        false;
+  }
+
+  Future<void> _ensureIncomingCallPermissions() async {
+    if (!Platform.isAndroid ||
+        widget.isDesktopSidebar ||
+        _incomingCallPermissionFlowRunning ||
+        WidgetsBinding.instance.lifecycleState != AppLifecycleState.resumed ||
+        ref.read(callServiceProvider).isInCall ||
+        _incomingCallPermissionGuidanceShownThisSession) {
+      return;
+    }
+    _incomingCallPermissionGuidanceShownThisSession = true;
+    _incomingCallPermissionFlowRunning = true;
+    try {
+      var status = await AndroidNotificationSettingsService
+          .incomingCallPermissionStatus();
+      if (!mounted || status == null) return;
+
+      if (!status.notificationGranted) {
+        // POST_NOTIFICATIONS is a real Android runtime permission. Request it
+        // while the chat list is visible so Android can show its native dialog.
+        final granted = await AndroidNotificationSettingsService.request();
+        if (!mounted) return;
+        if (!granted) {
+          await _showIncomingCallPermissionNotice(
+            title: _chatPageText(
+              context,
+              zhCN: '来电通知未开启',
+              zhTW: '來電通知未開啟',
+              en: 'Call notifications are disabled',
+            ),
+            body: _chatPageText(
+              context,
+              zhCN: '请稍后在系统权限中允许通知。后台弹出界面、锁屏显示等厂商权限不能由应用直接授予。',
+              zhTW: '請稍後在系統權限中允許通知。背景彈出介面、鎖屏顯示等廠商權限不能由應用直接授予。',
+              en: 'Allow notifications later in system permissions. Manufacturer pop-up and lock-screen permissions cannot be granted directly by the app.',
+            ),
+          );
+          return;
+        }
+        status = await AndroidNotificationSettingsService
+            .incomingCallPermissionStatus();
+        if (!mounted || status == null) return;
+      }
+
+      await _guideFullScreenPermission(status);
+    } finally {
+      _incomingCallPermissionFlowRunning = false;
+    }
+  }
+
+  Future<void> _continueIncomingCallPermissionFlow(String stage) async {
+    if (_incomingCallPermissionFlowRunning) return;
+    _incomingCallPermissionFlowRunning = true;
+    try {
+      final status = await AndroidNotificationSettingsService
+          .incomingCallPermissionStatus();
+      if (!mounted || status == null || !status.notificationGranted) return;
+      if ((stage == 'notification' || stage == 'full_screen') &&
+          !status.fullScreenIntentGranted) {
+        return;
+      }
+      // Vendor-specific permissions are only a fallback from Settings. Do
+      // not show a permission prompt for every Android device on list entry.
+    } finally {
+      _incomingCallPermissionFlowRunning = false;
+    }
+  }
+
+  Future<void> _guideFullScreenPermission(
+    AndroidIncomingCallPermissionStatus status,
+  ) async {
+    if (!status.fullScreenIntentGranted) {
+      final openSettings = await _confirmIncomingCallPermission(
+        title: _chatPageText(
+          context,
+          zhCN: '允许全屏来电',
+          zhTW: '允許全螢幕來電',
+          en: 'Allow full-screen calls',
+        ),
+        body: _chatPageText(
+          context,
+          zhCN: '请在系统设置中允许全屏通知，否则锁屏或后台时可能只有铃声，没有接听页面。',
+          zhTW: '請在系統設定中允許全螢幕通知，否則鎖屏或背景時可能只有鈴聲，沒有接聽頁面。',
+          en: 'Allow full-screen notifications, otherwise calls may ring without showing the answer screen.',
+        ),
+        action: _chatPageText(
+          context,
+          zhCN: '打开设置',
+          zhTW: '開啟設定',
+          en: 'Open settings',
+        ),
+      );
+      if (openSettings && mounted && !ref.read(callServiceProvider).isInCall) {
+        _incomingCallSettingsAwaitingReturn = 'full_screen';
+        await AndroidNotificationSettingsService.openFullScreenIntentSettings();
+      }
+      return;
+    }
+  }
+
+  Future<void> _showIncomingCallPermissionNotice({
+    required String title,
+    required String body,
+  }) async {
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(title),
+        content: Text(body),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: Text(
+              _chatPageText(
+                dialogContext,
+                zhCN: '知道了',
+                zhTW: '知道了',
+                en: 'OK',
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  DateTime? _lastResumeRefreshAt;
 
   /// 应用恢复时刷新数据（静默刷新，不显示加载状态）
   Future<void> _refreshOnResume() async {
     final authState = ref.read(authServiceProvider);
-    if (authState.status == AuthStatus.authenticated) {
-      await _refreshOfficialSettings();
-      // 静默刷新聊天列表（不显示loading，不重新排序）
-      ref.read(chatListProvider.notifier).silentRefresh();
-      // 静默刷新联系人列表
-      ref.read(contactListProvider.notifier).silentRefresh();
-      ref.read(pendingFriendRequestCountProvider.notifier).refresh();
+    if (authState.status != AuthStatus.authenticated) return;
+
+    // 前后台抖动时避免连续刷：5 秒内最多一次。
+    final now = DateTime.now();
+    if (_lastResumeRefreshAt != null &&
+        now.difference(_lastResumeRefreshAt!) < const Duration(seconds: 5)) {
+      return;
     }
+    _lastResumeRefreshAt = now;
+
+    await _refreshOfficialSettings();
+    // 静默刷新：标题不显示「刷新中」
+    unawaited(ref.read(chatListProvider.notifier).silentRefresh());
+    unawaited(ref.read(contactListProvider.notifier).silentRefresh());
+    unawaited(ref.read(pendingFriendRequestCountProvider.notifier).refresh());
   }
 
   Future<void> _refreshOfficialSettings() async {
@@ -239,42 +430,10 @@ class _ChatPageState extends ConsumerState<ChatPage>
 
   /// 构建标题（显示刷新状态）
   Widget _buildTitle(bool isDark, AppLocalizations l10n) {
-    // 使用 select 只监听加载状态，避免不必要的重建
+    // 仅手动/首次加载显示「刷新中」；静默刷新（后台恢复、WS 重连）不打扰标题。
     final isLoading = ref.watch(chatListProvider.select((s) => s.isLoading));
-    final isSilentLoading = ref.watch(
-      chatListProvider.select((s) => s.isSilentLoading),
-    );
 
-    // 首次加载或手动刷新时显示"刷新中..."
     if (isLoading) {
-      return Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          SizedBox(
-            width: 14,
-            height: 14,
-            child: CircularProgressIndicator(
-              strokeWidth: 2,
-              valueColor: AlwaysStoppedAnimation<Color>(
-                AppColors.textSecondaryFor(context),
-              ),
-            ),
-          ),
-          const SizedBox(width: 8),
-          Text(
-            l10n.refreshing,
-            style: TextStyle(
-              fontSize: 17,
-              fontWeight: FontWeight.w600,
-              color: AppColors.textSecondaryFor(context),
-            ),
-          ),
-        ],
-      );
-    }
-
-    // 从后台恢复时静默刷新，使用相同的刷新中样式
-    if (isSilentLoading) {
       return Row(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -732,10 +891,6 @@ class _ChatPageState extends ConsumerState<ChatPage>
                                 showPendingApprovalDot:
                                     chat.hasPendingJoinRequests,
                                 onTap: () => _openChat(context, chat),
-                                onLongPress: widget.isDesktopSidebar
-                                    ? null
-                                    : () =>
-                                        _showChatPreview(context, ref, chat),
                                 onSwipeAction: (action) => _handleSwipeAction(
                                   context,
                                   ref,
@@ -930,24 +1085,24 @@ class _ChatPageState extends ConsumerState<ChatPage>
                     ),
                     const SizedBox(height: 16),
                     _CreateOption(
-                      icon: Icons.search,
+                      icon: Icons.person_add_alt_1_outlined,
                       iconColor: AppColors.primaryFor(outerContext),
                       title: _chatPageText(
                         outerContext,
-                        zhCN: '搜索用户',
-                        zhTW: '搜尋用戶',
-                        en: 'Search Users',
+                        zhCN: '添加好友',
+                        zhTW: '新增好友',
+                        en: 'Add Friend',
                       ),
                       subtitle: _chatPageText(
                         outerContext,
-                        zhCN: '搜索用户开始聊天',
-                        zhTW: '搜尋用戶開始聊天',
-                        en: 'Find a user to start chatting',
+                        zhCN: '添加好友开始聊天',
+                        zhTW: '新增好友開始聊天',
+                        en: 'Add a friend to start chatting',
                       ),
                       onTap: () {
                         Navigator.pop(sheetContext);
                         if (widget.isDesktopSidebar) {
-                          // 桌面端：在右侧面板显示搜索用户
+                          // 桌面端：在右侧面板显示添加好友
                           ref.read(desktopProfileProvider.notifier).state =
                               const DesktopProfileInfo(
                             type: DesktopPanelType.searchUsers,
@@ -1523,7 +1678,7 @@ class _ChatPageState extends ConsumerState<ChatPage>
             ),
           ),
           const SizedBox(width: 12),
-          // 删除
+          // 清除聊天记录
           Expanded(
             child: GestureDetector(
               onTap: hasSelection ? _deleteSelected : null,
@@ -1544,9 +1699,9 @@ class _ChatPageState extends ConsumerState<ChatPage>
                     child: Text(
                       _chatPageText(
                         context,
-                        zhCN: '删除',
-                        zhTW: '刪除',
-                        en: 'Delete',
+                        zhCN: '清除记录',
+                        zhTW: '清除記錄',
+                        en: 'Clear',
                       ),
                       textAlign: TextAlign.center,
                       style: TextStyle(
@@ -1668,9 +1823,9 @@ class _ChatPageState extends ConsumerState<ChatPage>
                     Text(
                       _chatPageText(
                         context,
-                        zhCN: '删除 ${_selectedChatIds.length} 个聊天？',
-                        zhTW: '刪除 ${_selectedChatIds.length} 個聊天？',
-                        en: 'Delete ${_selectedChatIds.length} chats?',
+                        zhCN: '清除 ${_selectedChatIds.length} 个聊天的记录？',
+                        zhTW: '清除 ${_selectedChatIds.length} 個聊天的記錄？',
+                        en: 'Clear history of ${_selectedChatIds.length} chats?',
                       ),
                       style: TextStyle(
                         fontSize: 17,
@@ -1682,9 +1837,10 @@ class _ChatPageState extends ConsumerState<ChatPage>
                     Text(
                       _chatPageText(
                         context,
-                        zhCN: '聊天将从列表中移除，但不会删除聊天记录',
-                        zhTW: '聊天將從清單中移除，但不會刪除聊天記錄',
-                        en: 'These chats will be removed from the list, but the chat history will be kept',
+                        zhCN: '将清除本地聊天记录；不会退出群聊，也不会删除好友',
+                        zhTW: '將清除本機聊天記錄；不會退出群聊，也不會刪除好友',
+                        en:
+                            'Local chat history will be cleared. You will not leave groups or remove friends',
                       ),
                       textAlign: TextAlign.center,
                       style: TextStyle(
@@ -1739,9 +1895,9 @@ class _ChatPageState extends ConsumerState<ChatPage>
                               child: Text(
                                 _chatPageText(
                                   context,
-                                  zhCN: '删除',
-                                  zhTW: '刪除',
-                                  en: 'Delete',
+                                  zhCN: '清除',
+                                  zhTW: '清除',
+                                  en: 'Clear',
                                 ),
                                 textAlign: TextAlign.center,
                                 style: const TextStyle(
@@ -1765,13 +1921,43 @@ class _ChatPageState extends ConsumerState<ChatPage>
     );
   }
 
-  void _performDelete() {
+  Future<void> _performDelete() async {
     final notifier = ref.read(chatListProvider.notifier);
-    for (final chatId in _selectedChatIds) {
-      notifier.hideChatFromServer(chatId);
-    }
+    final ids = _selectedChatIds.toList(growable: false);
     ref.read(chatEditModeProvider.notifier).state = false;
     setState(() => _selectedChatIds.clear());
+
+    var failed = 0;
+    for (final chatId in ids) {
+      // 彻底清除记录（服务端 clear + 本地消息），会话仍保留。
+      final ok = await notifier.clearChatHistoryThoroughly(chatId);
+      if (!ok) failed++;
+    }
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          failed == 0
+              ? _chatPageText(
+                  context,
+                  zhCN: '聊天记录已清除',
+                  zhTW: '聊天記錄已清除',
+                  en: 'Chat history cleared',
+                )
+              : _chatPageText(
+                  context,
+                  zhCN: '有 $failed 个会话清除失败，请稍后重试',
+                  zhTW: '有 $failed 個會話清除失敗，請稍後重試',
+                  en: '$failed chats failed to clear. Please try again.',
+                ),
+        ),
+        duration: const Duration(seconds: 2),
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(10),
+        ),
+      ),
+    );
   }
 
   Widget _buildEmptyState(AppLocalizations l10n) {
@@ -1895,30 +2081,50 @@ class _ChatPageState extends ConsumerState<ChatPage>
         break;
 
       case SwipeAction.delete:
-        // 直接删除聊天记录并从列表移除
-        notifier.deleteChat(chat.id);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              _chatPageText(
-                context,
-                zhCN: '已删除',
-                zhTW: '已刪除',
-                en: 'Deleted',
-              ),
-            ),
-            duration: const Duration(seconds: 2),
-            behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(10),
-            ),
-          ),
-        );
+        // 先确认「清除聊天记录」，避免被理解成退群/删好友。
+        _showClearChatHistoryConfirm(context, ref, chat);
         break;
     }
   }
 
-  void _showDeleteConfirmDialog(
+  String _clearChatHistoryConfirmBody(BuildContext context, ChatItem chat) {
+    final name = chat.name.trim().isEmpty
+        ? _chatPageText(
+            context,
+            zhCN: '该聊天',
+            zhTW: '該聊天',
+            en: 'this chat',
+          )
+        : chat.name.trim();
+    switch (chat.type) {
+      case ChatItemType.group:
+        return _chatPageText(
+          context,
+          zhCN: '将清除「$name」的本地聊天记录。\n\n清除后不会退出群聊，其他成员不受影响。',
+          zhTW: '將清除「$name」的本機聊天記錄。\n\n清除後不會退出群聊，其他成員不受影響。',
+          en:
+              'Clear the local chat history of "$name".\n\nYou will not leave the group, and other members are not affected.',
+        );
+      case ChatItemType.channel:
+        return _chatPageText(
+          context,
+          zhCN: '将清除「$name」的本地聊天记录。\n\n清除后不会取消订阅，其他订阅者不受影响。',
+          zhTW: '將清除「$name」的本機聊天記錄。\n\n清除後不會取消訂閱，其他訂閱者不受影響。',
+          en:
+              'Clear the local chat history of "$name".\n\nYou will not unsubscribe, and other subscribers are not affected.',
+        );
+      case ChatItemType.private:
+        return _chatPageText(
+          context,
+          zhCN: '将清除与「$name」的本地聊天记录。\n\n清除后不会删除好友，对方不受影响。',
+          zhTW: '將清除與「$name」的本機聊天記錄。\n\n清除後不會刪除好友，對方不受影響。',
+          en:
+              'Clear the local chat history with "$name".\n\nThe friend relationship will not be removed, and the other person is not affected.',
+        );
+    }
+  }
+
+  void _showClearChatHistoryConfirm(
     BuildContext context,
     WidgetRef ref,
     ChatItem chat,
@@ -1933,9 +2139,9 @@ class _ChatPageState extends ConsumerState<ChatPage>
         title: Text(
           _chatPageText(
             context,
-            zhCN: '删除聊天',
-            zhTW: '刪除聊天',
-            en: 'Delete Chat',
+            zhCN: '清除聊天记录？',
+            zhTW: '清除聊天記錄？',
+            en: 'Clear chat history?',
           ),
           style: TextStyle(
             fontSize: 17,
@@ -1944,14 +2150,10 @@ class _ChatPageState extends ConsumerState<ChatPage>
           ),
         ),
         content: Text(
-          _chatPageText(
-            context,
-            zhCN: '确定要删除与"${chat.name}"的聊天记录吗？',
-            zhTW: '確定要刪除與「${chat.name}」的聊天記錄嗎？',
-            en: 'Delete the chat history with "${chat.name}"?',
-          ),
+          _clearChatHistoryConfirmBody(context, chat),
           style: TextStyle(
             fontSize: 15,
+            height: 1.4,
             color: AppColors.textSecondaryFor(context),
           ),
         ),
@@ -1969,16 +2171,43 @@ class _ChatPageState extends ConsumerState<ChatPage>
             ),
           ),
           TextButton(
-            onPressed: () {
+            onPressed: () async {
               Navigator.pop(context);
-              ref.read(chatListProvider.notifier).deleteChat(chat.id);
+              final ok = await ref
+                  .read(chatListProvider.notifier)
+                  .clearChatHistoryThoroughly(chat.id);
+              if (!mounted) return;
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text(
+                    ok
+                        ? _chatPageText(
+                            context,
+                            zhCN: '聊天记录已清除',
+                            zhTW: '聊天記錄已清除',
+                            en: 'Chat history cleared',
+                          )
+                        : _chatPageText(
+                            context,
+                            zhCN: '清除失败，请稍后重试',
+                            zhTW: '清除失敗，請稍後重試',
+                            en: 'Failed to clear. Please try again.',
+                          ),
+                  ),
+                  duration: const Duration(seconds: 2),
+                  behavior: SnackBarBehavior.floating,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                ),
+              );
             },
             child: Text(
               _chatPageText(
                 context,
-                zhCN: '删除',
-                zhTW: '刪除',
-                en: 'Delete',
+                zhCN: '清除',
+                zhTW: '清除',
+                en: 'Clear',
               ),
               style: TextStyle(color: AppColors.error),
             ),
@@ -1986,6 +2215,14 @@ class _ChatPageState extends ConsumerState<ChatPage>
         ],
       ),
     );
+  }
+
+  void _showDeleteConfirmDialog(
+    BuildContext context,
+    WidgetRef ref,
+    ChatItem chat,
+  ) {
+    _showClearChatHistoryConfirm(context, ref, chat);
   }
 
   /// 删除选项对话框 - iOS ActionSheet 风格
@@ -2019,9 +2256,9 @@ class _ChatPageState extends ConsumerState<ChatPage>
                     child: Text(
                       _chatPageText(
                         context,
-                        zhCN: '删除与"${chat.name}"的聊天',
-                        zhTW: '刪除與「${chat.name}」的聊天',
-                        en: 'Delete chat with "${chat.name}"',
+                        zhCN: '清除「${chat.name}」的聊天记录',
+                        zhTW: '清除「${chat.name}」的聊天記錄',
+                        en: 'Clear chat history of "${chat.name}"',
                       ),
                       style: TextStyle(
                         fontSize: 13,
@@ -2034,19 +2271,19 @@ class _ChatPageState extends ConsumerState<ChatPage>
                     height: 1,
                     color: AppColors.dividerFor(context),
                   ),
-                  // 删除列表
+                  // 仅从列表隐藏
                   _DeleteOptionItem(
                     title: _chatPageText(
                       context,
-                      zhCN: '从列表中删除',
-                      zhTW: '從列表中刪除',
-                      en: 'Remove from List',
+                      zhCN: '仅从列表中移除',
+                      zhTW: '僅從列表中移除',
+                      en: 'Remove from List Only',
                     ),
                     subtitle: _chatPageText(
                       context,
-                      zhCN: '仅从聊天列表移除，保留聊天记录',
-                      zhTW: '僅從聊天列表移除，保留聊天記錄',
-                      en: 'Remove it from the chat list only and keep the chat history',
+                      zhCN: '会话从列表消失，聊天记录仍保留',
+                      zhTW: '會話從列表消失，聊天記錄仍保留',
+                      en: 'Hide the chat from the list and keep the history',
                     ),
                     isDark: isDark,
                     onTap: () {
@@ -2077,26 +2314,41 @@ class _ChatPageState extends ConsumerState<ChatPage>
                     height: 1,
                     color: AppColors.dividerFor(context),
                   ),
-                  // 删除聊天记录
+                  // 清除聊天记录
                   _DeleteOptionItem(
                     title: _chatPageText(
                       context,
-                      zhCN: '删除聊天记录',
-                      zhTW: '刪除聊天記錄',
-                      en: 'Delete Chat History',
+                      zhCN: '清除聊天记录',
+                      zhTW: '清除聊天記錄',
+                      en: 'Clear Chat History',
                     ),
-                    subtitle: _chatPageText(
-                      context,
-                      zhCN: '清空本地聊天记录，对方的记录不受影响',
-                      zhTW: '清空本地聊天記錄，對方的記錄不受影響',
-                      en: "Clear your local chat history only. The other person's history is not affected",
-                    ),
+                    subtitle: chat.type == ChatItemType.group
+                        ? _chatPageText(
+                            context,
+                            zhCN: '清除本地记录，不会退出群聊',
+                            zhTW: '清除本機記錄，不會退出群聊',
+                            en: 'Clear local history. You will not leave the group',
+                          )
+                        : chat.type == ChatItemType.private
+                            ? _chatPageText(
+                                context,
+                                zhCN: '清除本地记录，不会删除好友',
+                                zhTW: '清除本機記錄，不會刪除好友',
+                                en:
+                                    'Clear local history. The friend will not be removed',
+                              )
+                            : _chatPageText(
+                                context,
+                                zhCN: '清除本地记录，不会取消订阅',
+                                zhTW: '清除本機記錄，不會取消訂閱',
+                                en:
+                                    'Clear local history. You will not unsubscribe',
+                              ),
                     isDark: isDark,
                     isDestructive: true,
                     onTap: () {
                       Navigator.pop(context);
-                      // 显示二次确认
-                      _showFinalDeleteConfirm(context, ref, chat);
+                      _showClearChatHistoryConfirm(context, ref, chat);
                     },
                   ),
                 ],
@@ -2140,96 +2392,13 @@ class _ChatPageState extends ConsumerState<ChatPage>
     );
   }
 
-  /// 删除聊天记录的二次确认
+  /// 清除聊天记录二次确认（兼容旧调用）
   void _showFinalDeleteConfirm(
     BuildContext context,
     WidgetRef ref,
     ChatItem chat,
   ) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        backgroundColor: isDark ? AppColors.darkSurface : Colors.white,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-        title: Text(
-          _chatPageText(
-            context,
-            zhCN: '确认删除',
-            zhTW: '確認刪除',
-            en: 'Confirm Delete',
-          ),
-          style: TextStyle(
-            fontSize: 17,
-            fontWeight: FontWeight.w600,
-            color: AppColors.textPrimaryFor(context),
-          ),
-        ),
-        content: Text(
-          _chatPageText(
-            context,
-            zhCN:
-                '确定要删除与"${chat.name}"的所有聊天记录吗？\n\n此操作仅删除您本地的记录，对方手机上的聊天记录不会被删除。',
-            zhTW:
-                '確定要刪除與「${chat.name}」的所有聊天記錄嗎？\n\n此操作僅刪除你本機的記錄，對方裝置上的聊天記錄不會被刪除。',
-            en: 'Delete all chat history with "${chat.name}"?\n\nThis only deletes your local records. The other person\'s chat history will not be deleted.',
-          ),
-          style: TextStyle(
-            fontSize: 15,
-            color: AppColors.textSecondaryFor(context),
-            height: 1.4,
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: Text(
-              _chatPageText(
-                context,
-                zhCN: '取消',
-                zhTW: '取消',
-                en: 'Cancel',
-              ),
-              style: TextStyle(color: AppColors.textSecondaryFor(context)),
-            ),
-          ),
-          TextButton(
-            onPressed: () {
-              Navigator.pop(context);
-              // 删除聊天记录
-              ref.read(chatListProvider.notifier).deleteChat(chat.id);
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(
-                  content: Text(
-                    _chatPageText(
-                      context,
-                      zhCN: '聊天记录已删除',
-                      zhTW: '聊天記錄已刪除',
-                      en: 'Chat history deleted',
-                    ),
-                  ),
-                  duration: const Duration(seconds: 2),
-                  behavior: SnackBarBehavior.floating,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                ),
-              );
-            },
-            child: Text(
-              _chatPageText(
-                context,
-                zhCN: '删除',
-                zhTW: '刪除',
-                en: 'Delete',
-              ),
-              style: TextStyle(color: AppColors.error),
-            ),
-          ),
-        ],
-      ),
-    );
+    _showClearChatHistoryConfirm(context, ref, chat);
   }
 }
 
@@ -2788,9 +2957,9 @@ class _ChatPreviewDialogState extends ConsumerState<_ChatPreviewDialog>
                                 icon: Icons.delete_outline,
                                 title: _chatPageText(
                                   context,
-                                  zhCN: '删除',
-                                  zhTW: '刪除',
-                                  en: 'Delete',
+                                  zhCN: '清除聊天记录',
+                                  zhTW: '清除聊天記錄',
+                                  en: 'Clear Chat History',
                                 ),
                                 isDark: isDark,
                                 isDestructive: true,
@@ -2978,8 +3147,11 @@ class _PreviewBubble extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final content = message['content'] as Map<String, dynamic>? ?? {};
-    final text = content['text'] as String? ?? '';
+    final rawText = content['text'] as String? ?? '';
     final msgType = message['type'] as int? ?? 1;
+    final text = msgType == 99
+        ? resolveSystemMessageText(rawText, currentUserId: currentUserId)
+        : rawText;
     final senderName = message['sender_name'] as String?;
     final senderId = message['sender_id'] as String? ?? '';
     final createdAt = message['created_at'] as String?;

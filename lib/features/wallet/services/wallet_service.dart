@@ -90,11 +90,12 @@ enum TransactionType {
   redPacketSend, // 发红包
   redPacketReceive, // 收红包
   refund, // 退款
-  adminRecharge, // 管理员充值
-  adminDeduct, // 管理员扣减
+  adminRecharge, // 后台充值
+  adminDeduct, // 后台扣款
   rechargeRejected, // 充值被拒绝
   vipPurchase, // 购买会员
-  unknown, // 未知类型（防止新增类型时崩溃或误显示）
+  checkInReward, // 签到奖励
+  unknown, // 未知类型（保留流水，标题显示「交易记录」）
 }
 
 extension TransactionTypeExtension on TransactionType {
@@ -122,16 +123,25 @@ extension TransactionTypeExtension on TransactionType {
         return 'recharge_rejected';
       case TransactionType.vipPurchase:
         return 'vip_purchase';
+      case TransactionType.checkInReward:
+        return 'check_in_reward';
       case TransactionType.unknown:
         return 'unknown';
     }
   }
 
+  /// 提现 / 签到奖励不展示 remark 副标题
+  bool get hideRemarkSubtitle =>
+      this == TransactionType.withdraw ||
+      this == TransactionType.checkInReward;
+
   static TransactionType fromString(String value) {
-    switch (value) {
+    switch (value.trim().toLowerCase()) {
       case 'recharge':
         return TransactionType.recharge;
+      // withdraw_hold 与 withdraw 同属提现展示，标题统一为「提现」
       case 'withdraw':
+      case 'withdraw_hold':
         return TransactionType.withdraw;
       case 'transfer_out':
         return TransactionType.transferOut;
@@ -151,6 +161,8 @@ extension TransactionTypeExtension on TransactionType {
         return TransactionType.rechargeRejected;
       case 'vip_purchase':
         return TransactionType.vipPurchase;
+      case 'check_in_reward':
+        return TransactionType.checkInReward;
       default:
         debugPrint('[Wallet] Unknown transaction type: $value');
         return TransactionType.unknown;
@@ -165,14 +177,14 @@ extension TransactionTypeExtension on TransactionType {
         return _walletServiceText(zhCN: '提现', zhTW: '提現', en: 'Withdraw');
       case TransactionType.transferOut:
         return _walletServiceText(
-          zhCN: '转账-转出',
-          zhTW: '轉帳-轉出',
+          zhCN: '转账转出',
+          zhTW: '轉帳轉出',
           en: 'Transfer Out',
         );
       case TransactionType.transferIn:
         return _walletServiceText(
-          zhCN: '转账-转入',
-          zhTW: '轉帳-轉入',
+          zhCN: '转账转入',
+          zhTW: '轉帳轉入',
           en: 'Transfer In',
         );
       case TransactionType.redPacketSend:
@@ -183,23 +195,23 @@ extension TransactionTypeExtension on TransactionType {
         );
       case TransactionType.redPacketReceive:
         return _walletServiceText(
-          zhCN: '收到红包',
-          zhTW: '收到紅包',
+          zhCN: '领取红包',
+          zhTW: '領取紅包',
           en: 'Red Packet Received',
         );
       case TransactionType.refund:
         return _walletServiceText(zhCN: '退款', zhTW: '退款', en: 'Refund');
       case TransactionType.adminRecharge:
         return _walletServiceText(
-          zhCN: '系统充值',
-          zhTW: '系統儲值',
-          en: 'System Recharge',
+          zhCN: '后台充值',
+          zhTW: '後台儲值',
+          en: 'Admin Recharge',
         );
       case TransactionType.adminDeduct:
         return _walletServiceText(
-          zhCN: '系统扣减',
-          zhTW: '系統扣減',
-          en: 'System Deduction',
+          zhCN: '后台扣款',
+          zhTW: '後台扣款',
+          en: 'Admin Deduction',
         );
       case TransactionType.rechargeRejected:
         return _walletServiceText(
@@ -209,15 +221,21 @@ extension TransactionTypeExtension on TransactionType {
         );
       case TransactionType.vipPurchase:
         return _walletServiceText(
-          zhCN: '购买会员',
-          zhTW: '購買會員',
+          zhCN: '会员购买',
+          zhTW: '會員購買',
           en: 'VIP Purchase',
+        );
+      case TransactionType.checkInReward:
+        return _walletServiceText(
+          zhCN: '签到奖励',
+          zhTW: '簽到獎勵',
+          en: 'Check-in Reward',
         );
       case TransactionType.unknown:
         return _walletServiceText(
-          zhCN: '未知类型',
-          zhTW: '未知類型',
-          en: 'Unknown Type',
+          zhCN: '交易记录',
+          zhTW: '交易記錄',
+          en: 'Transaction',
         );
     }
   }
@@ -234,7 +252,8 @@ class Transaction {
   final String? relatedUserName;
   final String? relatedUserAvatar;
   final String? remark;
-  final DateTime createdAt;
+  /// UTC Instant；解析失败时为 null，UI 显示「未知」
+  final DateTime? createdAt;
 
   const Transaction({
     required this.id,
@@ -246,36 +265,55 @@ class Transaction {
     this.relatedUserName,
     this.relatedUserAvatar,
     this.remark,
-    required this.createdAt,
+    this.createdAt,
   });
 
+  /// 解析 RFC3339 / Unix 秒或毫秒；失败返回 null，禁止用当前时间冒充。
+  static DateTime? parseCreatedAt(dynamic raw) {
+    if (raw == null) return null;
+    if (raw is num) {
+      final value = raw.toDouble();
+      if (value <= 0) return null;
+      // 小于 1e12 按秒，否则按毫秒（与 Web 端兼容约定一致）
+      final ms = value < 1000000000000 ? (value * 1000).round() : value.round();
+      return DateTime.fromMillisecondsSinceEpoch(ms, isUtc: true);
+    }
+    final text = raw.toString().trim();
+    if (text.isEmpty) return null;
+    final asNum = num.tryParse(text);
+    if (asNum != null) return parseCreatedAt(asNum);
+    try {
+      final parsed = DateTime.parse(text);
+      return parsed.isUtc ? parsed : parsed.toUtc();
+    } catch (_) {
+      return null;
+    }
+  }
+
   factory Transaction.fromJson(Map<String, dynamic> json) {
-    // 处理 related_user 对象
+    // 处理 related_user 对象（可缺省；id 按字符串保留）
     final relatedUser = json['related_user'] as Map<String, dynamic>?;
+    final rawType = json['type']?.toString() ?? '';
+    final type = TransactionTypeExtension.fromString(rawType);
+    final rawRemark = json['remark']?.toString() ?? '';
 
     return Transaction(
-      id: json['id'] as int? ?? 0,
-      type: TransactionTypeExtension.fromString(json['type'] as String? ?? ''),
+      id: (json['id'] as num?)?.toInt() ?? 0,
+      type: type,
       amount: (json['amount'] as num?)?.toDouble() ?? 0.0,
       balanceAfter: (json['balance_after'] as num?)?.toDouble() ?? 0.0,
-      relatedId: json['related_id'] as String?,
-      relatedUserId: relatedUser?['id'] as String?,
-      relatedUserName: relatedUser?['nickname'] as String?,
-      relatedUserAvatar: relatedUser?['avatar'] as String?,
-      remark: json['remark'] as String?,
-      createdAt: json['created_at'] != null
-          ? DateTime.parse(json['created_at'] as String)
-          : DateTime.now(),
+      relatedId: json['related_id']?.toString(),
+      relatedUserId: relatedUser?['id']?.toString(),
+      relatedUserName: relatedUser?['nickname']?.toString(),
+      relatedUserAvatar: relatedUser?['avatar']?.toString(),
+      // 提现 / 签到奖励不渲染 remark 副标题
+      remark: type.hideRemarkSubtitle || rawRemark.isEmpty ? null : rawRemark,
+      createdAt: parseCreatedAt(json['created_at']),
     );
   }
 
-  /// 是否是收入
-  bool get isIncome =>
-      type == TransactionType.recharge ||
-      type == TransactionType.transferIn ||
-      type == TransactionType.redPacketReceive ||
-      type == TransactionType.refund ||
-      type == TransactionType.adminRecharge;
+  /// 金额方向以响应 amount 符号为准，不单凭 type 硬造正负。
+  bool get isIncome => amount > 0;
 }
 
 /// 红包类型

@@ -57,6 +57,14 @@ extension _MessageBubbleHelpers on MessageBubble {
                 size: 14,
               ),
             ],
+            if (isGroupChat && senderRole >= 2) ...[
+              const SizedBox(width: 4),
+              _GroupRoleBadge(role: senderRole),
+            ],
+            if (senderOfficial) ...[
+              const SizedBox(width: 4),
+              const OfficialBadge(size: 15),
+            ],
           ],
         ),
       ),
@@ -164,6 +172,34 @@ extension _MessageBubbleHelpers on MessageBubble {
           userId: message.senderId,
           name: message.senderName,
           avatar: message.senderAvatar,
+        ),
+      ),
+    );
+  }
+}
+
+class _GroupRoleBadge extends StatelessWidget {
+  const _GroupRoleBadge({required this.role});
+
+  final int role;
+
+  @override
+  Widget build(BuildContext context) {
+    final isOwner = role >= 3;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+      decoration: BoxDecoration(
+        color: isOwner
+            ? const Color(0xFFFFA726).withOpacity(0.16)
+            : const Color(0xFF3390EC).withOpacity(0.14),
+        borderRadius: BorderRadius.circular(4),
+      ),
+      child: Text(
+        isOwner ? '群主' : '管理员',
+        style: TextStyle(
+          fontSize: 10,
+          fontWeight: FontWeight.w600,
+          color: isOwner ? const Color(0xFFE88700) : const Color(0xFF287CC8),
         ),
       ),
     );

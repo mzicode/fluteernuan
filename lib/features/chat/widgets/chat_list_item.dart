@@ -23,6 +23,7 @@ import '../../vip/widgets/vip_badge.dart';
 import '../providers/chat_provider.dart';
 import '../services/emoji_store_service.dart';
 import '../utils/call_preview_formatter.dart';
+import '../utils/system_message_text.dart';
 
 String _chatListText(
   BuildContext context, {
@@ -60,6 +61,11 @@ bool shouldHideChatListRevocationPreview(String? text) {
 }
 
 @visibleForTesting
+bool shouldHideChatListMutePreview(String? text) {
+  return isMemberMuteSystemMessage(text ?? '');
+}
+
+@visibleForTesting
 String formatUnreadBadgeCount(int count) {
   if (count <= 0) return '';
   return count > 99 ? '99+' : count.toString();
@@ -72,7 +78,6 @@ enum SwipeAction { pin, mute, read, delete }
 class ChatListItem extends StatefulWidget {
   final ChatItem chat;
   final VoidCallback? onTap;
-  final VoidCallback? onLongPress;
   final Function(SwipeAction)? onSwipeAction;
   final bool isOfficial; // 是否是官方用户/群组/频道
   final bool isSelected; // 是否被选中（桌面端用）
@@ -84,7 +89,6 @@ class ChatListItem extends StatefulWidget {
     super.key,
     required this.chat,
     this.onTap,
-    this.onLongPress,
     this.onSwipeAction,
     this.isOfficial = false,
     this.isSelected = false,
@@ -268,14 +272,14 @@ class _ChatListItemState extends State<ChatListItem>
           color: const Color(0xFF8E8E93),
           onTap: () => _handleAction(SwipeAction.pin),
         ),
-        // 删除（点击后展开确认）
+        // 清除聊天记录（点击后展开确认）
         _ActionButton(
           icon: Icons.delete_outline,
           label: _chatListText(
             context,
-            zhCN: '删除',
-            zhTW: '刪除',
-            en: 'Delete',
+            zhCN: '清除记录',
+            zhTW: '清除記錄',
+            en: 'Clear',
           ),
           color: const Color(0xFFFF3B30),
           onTap: _showDeleteConfirmation,
@@ -307,9 +311,9 @@ class _ChatListItemState extends State<ChatListItem>
                 Text(
                   _chatListText(
                     context,
-                    zhCN: '删除',
-                    zhTW: '刪除',
-                    en: 'Delete',
+                    zhCN: '清除记录',
+                    zhTW: '清除記錄',
+                    en: 'Clear',
                   ),
                   style: const TextStyle(
                     color: Colors.white,
@@ -487,9 +491,9 @@ class _ChatListItemState extends State<ChatListItem>
               Text(
                 _chatListText(
                   context,
-                  zhCN: '删除',
-                  zhTW: '刪除',
-                  en: 'Delete',
+                  zhCN: '清除聊天记录',
+                  zhTW: '清除聊天記錄',
+                  en: 'Clear Chat History',
                 ),
                 style: const TextStyle(color: Colors.red),
               ),
@@ -530,13 +534,6 @@ class _ChatListItemState extends State<ChatListItem>
                     widget.onTap?.call();
                   }
                 },
-                onLongPress: widget.onLongPress != null
-                    ? () {
-                        // 触觉反馈
-                        HapticFeedback.heavyImpact();
-                        widget.onLongPress?.call();
-                      }
-                    : null,
                 child: Transform.translate(
                   offset: Offset(-_dragExtent, 0),
                   child: Container(
@@ -661,7 +658,6 @@ class _ChatListItemState extends State<ChatListItem>
                             overflow: TextOverflow.ellipsis,
                           ),
                         ),
-                        // 表情状态
                         if (widget.chat.emojiAvatar != null &&
                             widget.chat.emojiAvatar!.isNotEmpty) ...[
                           const SizedBox(width: 4),
@@ -670,7 +666,6 @@ class _ChatListItemState extends State<ChatListItem>
                             size: 18,
                           ),
                         ],
-                        // 官方认证标识（在名字/表情后面）
                         if (widget.isOfficial) ...[
                           const SizedBox(width: 4),
                           const OfficialBadge(size: 16),
@@ -685,7 +680,6 @@ class _ChatListItemState extends State<ChatListItem>
                             compact: true,
                           ),
                         ],
-                        // 类型标签（放在名字后面）
                         if (widget.chat.type == ChatItemType.channel)
                           Padding(
                             padding: const EdgeInsets.only(left: 6),
@@ -709,7 +703,6 @@ class _ChatListItemState extends State<ChatListItem>
                             ),
                           ),
                         ],
-                        // 静音图标 - TG 风格
                         if (widget.chat.isMuted)
                           Padding(
                             padding: const EdgeInsets.only(left: 4),
@@ -719,26 +712,27 @@ class _ChatListItemState extends State<ChatListItem>
                               color: AppColors.textTertiaryFor(context),
                             ),
                           ),
-                        // 认证标志
                         if (widget.chat.isVerified)
                           Padding(
                             padding: const EdgeInsets.only(left: 4),
-                            child: Icon(
-                              Icons.verified,
-                              size: 16,
-                              color: AppColors.linkFor(context),
-                            ),
+                            child: const OfficialBadgeStatic(size: 16),
                           ),
                       ],
                     ),
                   ),
-                  // 时间
-                  Text(
-                    widget.chat.time,
-                    style: TextStyle(
-                      fontSize: 12.5,
-                      fontWeight: FontWeight.w500,
-                      color: AppColors.textTertiaryFor(context),
+                  const SizedBox(width: 8),
+                  ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 88),
+                    child: Text(
+                      widget.chat.time,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      textAlign: TextAlign.right,
+                      style: TextStyle(
+                        fontSize: 12.5,
+                        fontWeight: FontWeight.w500,
+                        color: AppColors.textTertiaryFor(context),
+                      ),
                     ),
                   ),
                 ],
@@ -746,8 +740,11 @@ class _ChatListItemState extends State<ChatListItem>
               const SizedBox(height: 4),
               // 第二行：最后消息 + 置顶/未读
               Row(
+                crossAxisAlignment: CrossAxisAlignment.center,
                 children: [
-                  Expanded(child: _buildLastMessage(context, isDark)),
+                  Expanded(
+                    child: _buildLastMessage(context, isDark),
+                  ),
                   const SizedBox(width: 8),
                   if (widget.chat.hasMention) ...[
                     Container(
@@ -988,7 +985,16 @@ class _ChatListItemState extends State<ChatListItem>
       );
     }
 
+    if ((widget.chat.lastMessage ?? '').trim().isEmpty &&
+        widget.chat.lastMessageTime != null) {
+      return const SizedBox(height: 22);
+    }
+
     if (shouldHideChatListRevocationPreview(widget.chat.lastMessage)) {
+      return const SizedBox(height: 22);
+    }
+
+    if (shouldHideChatListMutePreview(widget.chat.lastMessage)) {
       return const SizedBox(height: 22);
     }
 
@@ -1090,32 +1096,38 @@ class _ChatListItemState extends State<ChatListItem>
         crossAxisAlignment: CrossAxisAlignment.center,
         children: [
           if (widget.showPendingApprovalDot) ...[
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
-              decoration: BoxDecoration(
-                color: Colors.red.withOpacity(isDark ? 0.18 : 0.1),
-                borderRadius: BorderRadius.circular(6),
-              ),
-              child: Text(
-                widget.chat.pendingJoinRequestCount > 0
-                    ? _chatListText(
-                        context,
-                        zhCN:
-                            '待审批 ${widget.chat.pendingJoinRequestCount > 99 ? '99+' : widget.chat.pendingJoinRequestCount}',
-                        zhTW:
-                            '待審批 ${widget.chat.pendingJoinRequestCount > 99 ? '99+' : widget.chat.pendingJoinRequestCount}',
-                        en: 'Pending ${widget.chat.pendingJoinRequestCount > 99 ? '99+' : widget.chat.pendingJoinRequestCount}',
-                      )
-                    : _chatListText(
-                        context,
-                        zhCN: '待审批',
-                        zhTW: '待審批',
-                        en: 'Pending',
-                      ),
-                style: const TextStyle(
-                  fontSize: 11,
-                  fontWeight: FontWeight.w600,
-                  color: Colors.red,
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 88),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                decoration: BoxDecoration(
+                  color: Colors.red.withOpacity(isDark ? 0.18 : 0.1),
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Text(
+                  widget.chat.pendingJoinRequestCount > 0
+                      ? _chatListText(
+                          context,
+                          zhCN:
+                              '待审批 ${widget.chat.pendingJoinRequestCount > 99 ? '99+' : widget.chat.pendingJoinRequestCount}',
+                          zhTW:
+                              '待審批 ${widget.chat.pendingJoinRequestCount > 99 ? '99+' : widget.chat.pendingJoinRequestCount}',
+                          en:
+                              'Pending ${widget.chat.pendingJoinRequestCount > 99 ? '99+' : widget.chat.pendingJoinRequestCount}',
+                        )
+                      : _chatListText(
+                          context,
+                          zhCN: '待审批',
+                          zhTW: '待審批',
+                          en: 'Pending',
+                        ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                    color: Colors.red,
+                  ),
                 ),
               ),
             ),
@@ -1247,6 +1259,9 @@ class _ChatListItemState extends State<ChatListItem>
   ) {
     final message = displayMsg ?? widget.chat.lastMessage ?? '';
     if (message.isEmpty && senderText.isEmpty) {
+      if (widget.chat.lastMessageTime != null) {
+        return const SizedBox(height: 22);
+      }
       return Text(
         _chatListText(
           context,
@@ -1288,15 +1303,19 @@ class _ChatListItemState extends State<ChatListItem>
         }
       }
 
-      // 如果是纯表情消息，渲染动画
+      // 如果是纯表情消息，渲染静态表情；发送者名过长时仍要正确省略。
       if (allEmoji && animatedEmojis.isNotEmpty) {
         return Row(
-          mainAxisSize: MainAxisSize.min,
           children: [
             if (senderText.isNotEmpty)
-              Text(
-                senderText,
-                style: TextStyle(fontSize: 14, color: textColor),
+              Flexible(
+                child: Text(
+                  senderText,
+                  style: TextStyle(fontSize: 14, color: textColor),
+                  maxLines: 1,
+                  softWrap: false,
+                  overflow: TextOverflow.ellipsis,
+                ),
               ),
             // 列表预览中禁用动画以节省 CPU/GPU
             ...animatedEmojis.map(
@@ -1321,75 +1340,72 @@ class _ChatListItemState extends State<ChatListItem>
   }
 
   /// 构建富文本消息预览（文字+小动画表情）
+  ///
+  /// 必须用 [Text.rich] + ellipsis，禁止 ClipRect/Row 硬裁切，
+  /// 否则长预览会在右侧置顶/未读图标前被「切断」半截字。
   Widget _buildRichMessagePreview(
     String senderText,
     String message,
     Color textColor,
   ) {
+    final style = TextStyle(fontSize: 14, color: textColor, height: 1.2);
     final chars = message.characters.toList();
-    final widgets = <Widget>[];
+    final spans = <InlineSpan>[];
+    var hasAnimatedEmoji = false;
 
     if (senderText.isNotEmpty) {
-      widgets.add(
-        Text(senderText, style: TextStyle(fontSize: 14, color: textColor)),
-      );
+      spans.add(TextSpan(text: senderText, style: style));
     }
 
-    String textBuffer = '';
+    final textBuffer = StringBuffer();
+    void flushText() {
+      if (textBuffer.isEmpty) return;
+      spans.add(TextSpan(text: textBuffer.toString(), style: style));
+      textBuffer.clear();
+    }
+
     for (final char in chars) {
       final animated = EmojiAnimations.findByEmoji(char);
       if (animated != null) {
-        // 先添加累积的文本
-        if (textBuffer.isNotEmpty) {
-          widgets.add(
-            Text(textBuffer, style: TextStyle(fontSize: 14, color: textColor)),
-          );
-          textBuffer = '';
-        }
-        // 添加动画表情（列表预览中禁用动画）
-        widgets.add(
-          SizedBox(
-            width: 18,
-            height: 18,
-            child: WebSafeLottie.asset(
-              animated.path,
-              repeat: false,
-              animate: false,
-              fit: BoxFit.contain,
+        flushText();
+        hasAnimatedEmoji = true;
+        spans.add(
+          WidgetSpan(
+            alignment: PlaceholderAlignment.middle,
+            child: SizedBox(
+              width: 18,
+              height: 18,
+              child: WebSafeLottie.asset(
+                animated.path,
+                repeat: false,
+                animate: false,
+                fit: BoxFit.contain,
+              ),
             ),
           ),
         );
       } else {
-        textBuffer += char;
+        textBuffer.write(char);
       }
     }
+    flushText();
 
-    // 添加剩余文本
-    if (textBuffer.isNotEmpty) {
-      widgets.add(
-        Flexible(
-          child: Text(
-            textBuffer,
-            style: TextStyle(fontSize: 14, color: textColor),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-          ),
-        ),
-      );
-    }
-
-    // 如果没有动画表情，使用普通文本
-    if (widgets.length == (senderText.isNotEmpty ? 2 : 1) &&
-        widgets.last is Flexible) {
+    if (!hasAnimatedEmoji) {
       return Text(
         senderText + message,
-        style: TextStyle(fontSize: 14, color: textColor),
+        style: style,
         maxLines: 1,
+        softWrap: false,
         overflow: TextOverflow.ellipsis,
       );
     }
 
-    return Row(mainAxisSize: MainAxisSize.min, children: widgets);
+    return Text.rich(
+      TextSpan(children: spans),
+      maxLines: 1,
+      softWrap: false,
+      overflow: TextOverflow.ellipsis,
+    );
   }
 
   /// 检测字符是否是emoji

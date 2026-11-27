@@ -149,10 +149,7 @@ final appRouterProvider = Provider<GoRouter>((ref) {
           }
           if (path.startsWith('/wallet/recharge') &&
               !compliance.allowsWalletRecharge) {
-            return compliance.allowsWallet ? '/wallet' : '/settings';
-          }
-          if (path.startsWith('/wallet') && !compliance.allowsWallet) {
-            return '/settings';
+            return '/wallet';
           }
           if (path.startsWith('/portal') && !compliance.allowsCustomPortal) {
             return '/home';

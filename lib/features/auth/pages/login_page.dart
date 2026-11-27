@@ -25,7 +25,6 @@ import '../../../core/utils/link_utils.dart';
 import '../../../core/utils/platform_utils.dart';
 import '../../../shared/widgets/desktop/auth_desktop_layout.dart';
 import 'agreement_page.dart';
-import 'forgot_password_page.dart';
 
 /// 登录页面
 String _loginText(
@@ -316,8 +315,6 @@ class _LoginPageState extends ConsumerState<LoginPage> {
                 color: AppColors.textSecondaryFor(context),
               ),
             ),
-            const Spacer(),
-            _buildForgotPasswordEntry(isDark),
           ],
         ),
 
@@ -502,97 +499,7 @@ class _LoginPageState extends ConsumerState<LoginPage> {
     );
   }
 
-  Widget _buildForgotPasswordEntry(bool isDark) {
-    final hint = Row(
-      children: [
-        Icon(
-          Icons.verified_user_outlined,
-          size: 16,
-          color: AppColors.textTertiaryFor(context),
-        ),
-        const SizedBox(width: 6),
-        Expanded(
-          child: Text(
-            _loginText(
-              context,
-              zhCN: '已绑定手机号可验证找回',
-              zhTW: '已綁定手機號可驗證找回',
-              en: 'Recover with a verified phone',
-            ),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(
-              fontSize: 12,
-              color: AppColors.textSecondaryFor(context),
-            ),
-          ),
-        ),
-      ],
-    );
 
-    final button = TextButton.icon(
-      onPressed: _openForgotPassword,
-      icon: const Icon(Icons.lock_reset_rounded, size: 17),
-      label: Text(
-        _loginText(
-          context,
-          zhCN: '找回账号密码',
-          zhTW: '找回帳號密碼',
-          en: 'Recover Password',
-        ),
-      ),
-      style: TextButton.styleFrom(
-        foregroundColor: AppColors.linkFor(context),
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-        minimumSize: const Size(0, 32),
-        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-        textStyle: const TextStyle(
-          fontSize: 13,
-          fontWeight: FontWeight.w600,
-        ),
-      ),
-    );
-
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        if (constraints.maxWidth < 260) {
-          return Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              hint,
-              Align(
-                alignment: Alignment.centerRight,
-                child: button,
-              ),
-            ],
-          );
-        }
-
-        return Row(
-          children: [
-            Expanded(child: hint),
-            button,
-          ],
-        );
-      },
-    );
-  }
-
-  Future<void> _openForgotPassword() async {
-    final result = await Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => const ForgotPasswordPage(),
-      ),
-    );
-    if (!mounted) return;
-    if (result is Map && result['username'] is String) {
-      final username = (result['username'] as String).trim();
-      if (username.isNotEmpty) {
-        _usernameController.text = username;
-        _clearError();
-      }
-    }
-  }
 
   void _clearError() {
     if (_errorMessage != null) {

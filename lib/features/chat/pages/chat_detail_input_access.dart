@@ -78,6 +78,23 @@ extension _ChatDetailInputAccess on _ChatDetailPageState {
     return false;
   }
 
+  bool _isLocalJoinedSession() {
+    return ref.watch(
+      chatListProvider.select(
+        (state) =>
+            state.pinnedChats.any((chat) => chat.id == widget.chatId) ||
+            state.regularChats.any((chat) => chat.id == widget.chatId),
+      ),
+    );
+  }
+
+  bool _isJoinedGroupOrChannel(api.Chat? chat) {
+    // 会话列表里已有这个群/频道，说明已经加入。详情失败或 my_role 缺失时
+    // 不能再当成非成员，否则底部会误出「加入群组」。
+    if (_isLocalJoinedSession()) return true;
+    return chat != null && chat.myRole >= 1;
+  }
+
   Widget _buildInputAreaForGroupChannel(bool isDark) {
     // 频道：检查是否已订阅
     if (widget.chatType == ChatType.channel) {
@@ -87,19 +104,18 @@ extension _ChatDetailInputAccess on _ChatDetailPageState {
           if (chat?.status == 2) {
             return _buildDissolvedBar(isDark);
           }
-          // myRole == 0 表示未订阅
-          if (chat == null || chat.myRole == 0) {
-            // 检查是否已提交申请
+          if (!_isJoinedGroupOrChannel(chat)) {
             if (chat?.pendingRequest == true) {
               return _buildPendingRequestBar(isDark);
             }
             return _buildJoinButton(isDark, isChannel: true);
           }
-          // 已订阅，检查禁言状态
           return _buildMuteStatusInputArea(isDark);
         },
         loading: () => _buildMuteStatusInputArea(isDark),
-        error: (_, __) => _buildJoinButton(isDark, isChannel: true),
+        error: (_, __) => _isJoinedGroupOrChannel(null)
+            ? _buildMuteStatusInputArea(isDark)
+            : _buildJoinButton(isDark, isChannel: true),
       );
     }
 
@@ -111,19 +127,18 @@ extension _ChatDetailInputAccess on _ChatDetailPageState {
           if (chat?.status == 2) {
             return _buildDissolvedBar(isDark);
           }
-          // myRole == 0 表示未加入
-          if (chat == null || chat.myRole == 0) {
-            // 检查是否已提交申请
+          if (!_isJoinedGroupOrChannel(chat)) {
             if (chat?.pendingRequest == true) {
               return _buildPendingRequestBar(isDark);
             }
             return _buildJoinButton(isDark, isChannel: false);
           }
-          // 已加入，检查禁言状态
           return _buildMuteStatusInputArea(isDark);
         },
         loading: () => _buildMuteStatusInputArea(isDark),
-        error: (_, __) => _buildJoinButton(isDark, isChannel: false),
+        error: (_, __) => _isJoinedGroupOrChannel(null)
+            ? _buildMuteStatusInputArea(isDark)
+            : _buildJoinButton(isDark, isChannel: false),
       );
     }
 

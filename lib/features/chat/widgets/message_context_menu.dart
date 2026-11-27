@@ -68,12 +68,8 @@ class MessageContextMenu extends StatefulWidget {
   final Function(String emoji)? onReaction;
   final VoidCallback? onReply;
   final VoidCallback? onCopy;
-  final VoidCallback? onTranslate;
-  final String? translateLabel;
   final VoidCallback? onForward;
-  final VoidCallback? onFavorite;
   final VoidCallback? onDetails;
-  final VoidCallback? onReport;
   final VoidCallback? onEdit;
   final VoidCallback? onDelete;
   final VoidCallback? onRevoke;
@@ -95,12 +91,8 @@ class MessageContextMenu extends StatefulWidget {
     this.onReaction,
     this.onReply,
     this.onCopy,
-    this.onTranslate,
-    this.translateLabel,
     this.onForward,
-    this.onFavorite,
     this.onDetails,
-    this.onReport,
     this.onEdit,
     this.onDelete,
     this.onRevoke,
@@ -385,25 +377,28 @@ class _MessageContextMenuState extends State<MessageContextMenu>
     Size screenSize,
     EdgeInsets padding,
   ) {
-    final menuWidth = 220.0;
-    final menuHeight = 320.0; // 预估菜单高度
+    final actions = _desktopMenuActions(context);
+    const itemWidth = 64.0;
+    const maxItemsPerRow = 5;
+    final visibleCount = actions.length > 10 ? 10 : actions.length;
+    final itemsPerRow = visibleCount <= maxItemsPerRow
+        ? (visibleCount < 1 ? 1 : visibleCount)
+        : ((visibleCount + 1) ~/ 2).clamp(1, maxItemsPerRow);
+    final menuWidth = itemsPerRow * itemWidth + 16;
+    final rowCount = (visibleCount / itemsPerRow).ceil().clamp(1, 2);
+    final menuHeight = 48.0 + 6 + rowCount * 62 + 16;
 
-    // 计算菜单位置，确保不超出屏幕
     double left = widget.tapPosition.dx;
     double top = widget.tapPosition.dy;
 
-    // 如果右边空间不够，往左移
     if (left + menuWidth > screenSize.width - 20) {
       left = screenSize.width - menuWidth - 20;
     }
-    // 如果左边超出，靠左
     if (left < 20) left = 20;
 
-    // 如果下边空间不够，往上移
     if (top + menuHeight > screenSize.height - 20) {
       top = screenSize.height - menuHeight - 20;
     }
-    // 如果上边超出，靠上
     if (top < 20) top = 20;
 
     return Stack(
@@ -415,11 +410,9 @@ class _MessageContextMenuState extends State<MessageContextMenu>
             crossAxisAlignment: CrossAxisAlignment.start,
             mainAxisSize: MainAxisSize.min,
             children: [
-              // 表情反应栏
               _buildDesktopReactionBar(isDark),
               const SizedBox(height: 6),
-              // 操作菜单
-              _buildDesktopActionMenu(context, isDark, menuWidth),
+              _buildDesktopActionMenu(context, isDark, menuWidth, actions),
             ],
           ),
         ),
@@ -498,26 +491,116 @@ class _MessageContextMenuState extends State<MessageContextMenu>
     );
   }
 
-  /// 桌面端操作菜单 - 紧凑样式
-  Widget _buildDesktopActionMenu(
-    BuildContext context,
-    bool isDark,
-    double menuWidth,
-  ) {
+  List<_MobileMenuAction> _desktopMenuActions(BuildContext context) {
     final l10n = AppLocalizations.of(context);
     final message = widget.message;
-
-    // 判断是否是媒体/文件类型消息
     final isMediaMessage = message.type == MessageItemType.image ||
         message.type == MessageItemType.video ||
         message.type == MessageItemType.file ||
         message.type == MessageItemType.voice;
 
+    return [
+      if (widget.onReply != null)
+        _MobileMenuAction(
+          icon: Icons.reply_rounded,
+          title: l10n.reply,
+          onTap: () => _handleAction(widget.onReply),
+        ),
+      if (message.type != MessageItemType.redPacket &&
+          message.type != MessageItemType.transfer &&
+          message.type != MessageItemType.system)
+        _MobileMenuAction(
+          icon: Icons.copy_rounded,
+          title: l10n.copy,
+          onTap: () => _handleAction(widget.onCopy),
+        ),
+      if (widget.onForward != null)
+        _MobileMenuAction(
+          icon: Icons.shortcut_rounded,
+          title: l10n.forward,
+          onTap: () => _handleAction(widget.onForward),
+        ),
+      if (widget.onDetails != null)
+        _MobileMenuAction(
+          icon: Icons.info_outline_rounded,
+          title: _messageContextText(
+            context,
+            zhCN: '消息详情',
+            zhTW: '訊息詳情',
+            en: 'Message details',
+          ),
+          onTap: () => _handleAction(widget.onDetails),
+        ),
+      if (isMediaMessage)
+        _MobileMenuAction(
+          icon: Icons.save_alt_rounded,
+          title: l10n.saveAs,
+          onTap: () => _handleAction(widget.onSaveAs),
+        ),
+      if (isMediaMessage && widget.onShowInFolder != null)
+        _MobileMenuAction(
+          icon: Icons.folder_open_rounded,
+          title: l10n.showInFolder,
+          onTap: () => _handleAction(widget.onShowInFolder),
+        ),
+      if (isMediaMessage &&
+          widget.onOpenFile != null &&
+          message.type == MessageItemType.file)
+        _MobileMenuAction(
+          icon: Icons.open_in_new_rounded,
+          title: l10n.get('open_with_default_app'),
+          onTap: () => _handleAction(widget.onOpenFile),
+        ),
+      if (message.isOutgoing &&
+          message.type != MessageItemType.redPacket &&
+          message.type != MessageItemType.transfer)
+        _MobileMenuAction(
+          icon: Icons.edit_rounded,
+          title: l10n.edit,
+          onTap: () => _handleAction(widget.onEdit),
+        ),
+      if (widget.onRevoke != null)
+        _MobileMenuAction(
+          icon: Icons.undo_rounded,
+          title: widget.revokeLabel ?? l10n.get('revoke'),
+          onTap: () => _handleAction(widget.onRevoke),
+        ),
+      if (widget.onPin != null)
+        _MobileMenuAction(
+          icon: Icons.push_pin_rounded,
+          title: l10n.pin,
+          onTap: () => _handleAction(widget.onPin),
+        ),
+      _MobileMenuAction(
+        icon: Icons.check_circle_outline_rounded,
+        title: l10n.select,
+        onTap: () => _handleAction(widget.onSelect),
+      ),
+      _MobileMenuAction(
+        icon: Icons.delete_outline_rounded,
+        title: l10n.delete,
+        onTap: () => _handleAction(widget.onDelete),
+        isDestructive: true,
+      ),
+    ];
+  }
+
+  Widget _buildDesktopActionMenu(
+    BuildContext context,
+    bool isDark,
+    double menuWidth,
+    List<_MobileMenuAction> actions,
+  ) {
+    final visible =
+        actions.length > 10 ? actions.sublist(0, 10) : actions;
+    const itemWidth = 64.0;
+
     return Container(
       width: menuWidth,
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
       decoration: BoxDecoration(
         color: AppColors.cardFor(context),
-        borderRadius: BorderRadius.circular(8),
+        borderRadius: BorderRadius.circular(12),
         boxShadow: [
           BoxShadow(
             color: Colors.black.withOpacity(0.15),
@@ -526,221 +609,18 @@ class _MessageContextMenuState extends State<MessageContextMenu>
           ),
         ],
       ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
+      child: Wrap(
+        spacing: 0,
+        runSpacing: 4,
         children: [
-          if (widget.onReply != null) ...[
-            _buildDesktopMenuItem(
-              icon: Icons.reply_rounded,
-              title: l10n.reply,
-              isDark: isDark,
-              onTap: () => _handleAction(widget.onReply),
+          for (final action in visible)
+            SizedBox(
+              width: itemWidth,
+              height: 62,
+              child: _buildGridMenuItem(action: action, isDark: isDark),
             ),
-            _buildDesktopDivider(isDark),
-          ],
-
-          if (message.type != MessageItemType.redPacket &&
-              message.type != MessageItemType.transfer &&
-              message.type != MessageItemType.system) ...[
-            _buildDesktopMenuItem(
-              icon: Icons.copy_rounded,
-              title: l10n.copy,
-              isDark: isDark,
-              onTap: () => _handleAction(widget.onCopy),
-            ),
-            _buildDesktopDivider(isDark),
-          ],
-
-          if (widget.onTranslate != null) ...[
-            _buildDesktopMenuItem(
-              icon: Icons.translate_rounded,
-              title: widget.translateLabel ??
-                  _messageContextL10n(
-                    context,
-                    l10n,
-                    'translate',
-                    zhCN: '翻译',
-                    zhTW: '翻譯',
-                    en: 'Translate',
-                  ),
-              isDark: isDark,
-              onTap: () => _handleAction(widget.onTranslate),
-            ),
-            _buildDesktopDivider(isDark),
-          ],
-
-          if (widget.onForward != null)
-            _buildDesktopMenuItem(
-              icon: Icons.shortcut_rounded,
-              title: l10n.forward,
-              isDark: isDark,
-              onTap: () => _handleAction(widget.onForward),
-            ),
-
-          if (widget.onFavorite != null) ...[
-            _buildDesktopDivider(isDark),
-            _buildDesktopMenuItem(
-              icon: Icons.favorite_border_rounded,
-              title: l10n.get('favorite'),
-              isDark: isDark,
-              onTap: () => _handleAction(widget.onFavorite),
-            ),
-          ],
-
-          if (widget.onDetails != null) ...[
-            _buildDesktopDivider(isDark),
-            _buildDesktopMenuItem(
-              icon: Icons.info_outline_rounded,
-              title: _messageContextText(
-                context,
-                zhCN: '消息详情',
-                zhTW: '訊息詳情',
-                en: 'Message details',
-              ),
-              isDark: isDark,
-              onTap: () => _handleAction(widget.onDetails),
-            ),
-          ],
-
-          if (widget.onReport != null) ...[
-            _buildDesktopDivider(isDark),
-            _buildDesktopMenuItem(
-              icon: Icons.report_gmailerrorred_outlined,
-              title: l10n.report,
-              isDark: isDark,
-              onTap: () => _handleAction(widget.onReport),
-              isDestructive: true,
-            ),
-          ],
-
-          // 媒体/文件类型消息显示额外操作
-          if (isMediaMessage) ...[
-            _buildDesktopDivider(isDark),
-            _buildDesktopMenuItem(
-              icon: Icons.save_alt_rounded,
-              title: l10n.saveAs,
-              isDark: isDark,
-              onTap: () => _handleAction(widget.onSaveAs),
-            ),
-            if (widget.onShowInFolder != null) ...[
-              _buildDesktopDivider(isDark),
-              _buildDesktopMenuItem(
-                icon: Icons.folder_open_rounded,
-                title: l10n.showInFolder,
-                isDark: isDark,
-                onTap: () => _handleAction(widget.onShowInFolder),
-              ),
-            ],
-            if (widget.onOpenFile != null &&
-                message.type == MessageItemType.file) ...[
-              _buildDesktopDivider(isDark),
-              _buildDesktopMenuItem(
-                icon: Icons.open_in_new_rounded,
-                title: l10n.get('open_with_default_app'),
-                isDark: isDark,
-                onTap: () => _handleAction(widget.onOpenFile),
-              ),
-            ],
-          ],
-
-          if (message.isOutgoing &&
-              message.type != MessageItemType.redPacket &&
-              message.type != MessageItemType.transfer) ...[
-            _buildDesktopDivider(isDark),
-            _buildDesktopMenuItem(
-              icon: Icons.edit_rounded,
-              title: l10n.edit,
-              isDark: isDark,
-              onTap: () => _handleAction(widget.onEdit),
-            ),
-          ],
-
-          if (widget.onRevoke != null) ...[
-            _buildDesktopDivider(isDark),
-            _buildDesktopMenuItem(
-              icon: Icons.undo_rounded,
-              title: widget.revokeLabel ?? l10n.get('revoke'),
-              isDark: isDark,
-              onTap: () => _handleAction(widget.onRevoke),
-            ),
-          ],
-
-          if (widget.onPin != null) ...[
-            _buildDesktopDivider(isDark),
-            _buildDesktopMenuItem(
-              icon: Icons.push_pin_rounded,
-              title: l10n.pin,
-              isDark: isDark,
-              onTap: () => _handleAction(widget.onPin),
-            ),
-          ],
-
-          _buildDesktopDivider(isDark),
-          _buildDesktopMenuItem(
-            icon: Icons.check_circle_outline_rounded,
-            title: l10n.select,
-            isDark: isDark,
-            onTap: () => _handleAction(widget.onSelect),
-          ),
-
-          _buildDesktopDivider(isDark),
-          _buildDesktopMenuItem(
-            icon: Icons.delete_outline_rounded,
-            title: l10n.delete,
-            isDark: isDark,
-            onTap: () => _handleAction(widget.onDelete),
-            isDestructive: true,
-          ),
         ],
       ),
-    );
-  }
-
-  Widget _buildDesktopMenuItem({
-    required IconData icon,
-    required String title,
-    required bool isDark,
-    required VoidCallback onTap,
-    bool isDestructive = false,
-  }) {
-    final color = isDestructive
-        ? AppColors.error
-        : (isDark ? Colors.white : Colors.black87);
-
-    return MouseRegion(
-      cursor: SystemMouseCursors.click,
-      child: Material(
-        color: Colors.transparent,
-        child: InkWell(
-          onTap: onTap,
-          hoverColor: isDark ? Colors.white10 : Colors.black.withOpacity(0.05),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-            child: Row(
-              children: [
-                Icon(icon, size: 18, color: color),
-                const SizedBox(width: 10),
-                Text(
-                  title,
-                  style: TextStyle(
-                    fontSize: 14,
-                    color: color,
-                    fontWeight: FontWeight.w400,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildDesktopDivider(bool isDark) {
-    return Container(
-      height: 0.5,
-      margin: const EdgeInsets.symmetric(horizontal: 8),
-      color: AppColors.dividerFor(context),
     );
   }
 
@@ -1418,31 +1298,11 @@ class _MessageContextMenuState extends State<MessageContextMenu>
           title: l10n.copy,
           onTap: () => _handleAction(widget.onCopy),
         ),
-      if (widget.onTranslate != null)
-        _MobileMenuAction(
-          icon: Icons.translate_rounded,
-          title: widget.translateLabel ??
-              _messageContextL10n(
-                context,
-                l10n,
-                'translate',
-                zhCN: '翻译',
-                zhTW: '翻譯',
-                en: 'Translate',
-              ),
-          onTap: () => _handleAction(widget.onTranslate),
-        ),
       if (widget.onForward != null)
         _MobileMenuAction(
           icon: Icons.shortcut_rounded,
           title: l10n.forward,
           onTap: () => _handleAction(widget.onForward),
-        ),
-      if (widget.onFavorite != null)
-        _MobileMenuAction(
-          icon: Icons.favorite_border_rounded,
-          title: l10n.get('favorite'),
-          onTap: () => _handleAction(widget.onFavorite),
         ),
       if (widget.onDetails != null)
         _MobileMenuAction(
@@ -1454,13 +1314,6 @@ class _MessageContextMenuState extends State<MessageContextMenu>
             en: 'Message details',
           ),
           onTap: () => _handleAction(widget.onDetails),
-        ),
-      if (widget.onReport != null)
-        _MobileMenuAction(
-          icon: Icons.report_gmailerrorred_outlined,
-          title: l10n.report,
-          onTap: () => _handleAction(widget.onReport),
-          isDestructive: true,
         ),
       if (message.isOutgoing &&
           message.type != MessageItemType.redPacket &&
@@ -2090,12 +1943,8 @@ Future<void> showMessageContextMenu({
   Function(String emoji)? onReaction,
   VoidCallback? onReply,
   VoidCallback? onCopy,
-  VoidCallback? onTranslate,
-  String? translateLabel,
   VoidCallback? onForward,
-  VoidCallback? onFavorite,
   VoidCallback? onDetails,
-  VoidCallback? onReport,
   VoidCallback? onEdit,
   VoidCallback? onDelete,
   VoidCallback? onRevoke,
@@ -2121,12 +1970,8 @@ Future<void> showMessageContextMenu({
       onReaction: onReaction,
       onReply: onReply,
       onCopy: onCopy,
-      onTranslate: onTranslate,
-      translateLabel: translateLabel,
       onForward: onForward,
-      onFavorite: onFavorite,
       onDetails: onDetails,
-      onReport: onReport,
       onEdit: onEdit,
       onDelete: onDelete,
       onRevoke: onRevoke,

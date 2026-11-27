@@ -564,7 +564,7 @@ class _RedPacketDetailSheetState extends State<_RedPacketDetailSheet> {
           ),
           const SizedBox(height: 18),
 
-          // 底部信息
+          // 白底区：领取列表可滑，统计跟在列表最底部（滑到底才看到）
           Expanded(
             child: Container(
               width: double.infinity,
@@ -582,62 +582,12 @@ class _RedPacketDetailSheetState extends State<_RedPacketDetailSheet> {
                   child: ListView(
                     physics: const AlwaysScrollableScrollPhysics(),
                     children: [
-                      Row(
-                        crossAxisAlignment: CrossAxisAlignment.center,
-                        children: [
-                          Expanded(
-                            child: Text(
-                              _localizedUiText(
-                                context,
-                                zhCN:
-                                    '已领取 $claimedCount/${redPacket.totalCount} 个，共 ${widget.currency}${claimedTotal.toStringAsFixed(2)}',
-                                zhTW:
-                                    '已領取 $claimedCount/${redPacket.totalCount} 個，共 ${widget.currency}${claimedTotal.toStringAsFixed(2)}',
-                                en: '$claimedCount/${redPacket.totalCount} claimed, ${widget.currency}${claimedTotal.toStringAsFixed(2)} total',
-                              ),
-                              style: TextStyle(
-                                fontSize: 13,
-                                color:
-                                    isDark ? Colors.white54 : Colors.grey[600],
-                              ),
-                            ),
-                          ),
-                          if (redPacket.type == RedPacketType.lucky)
-                            Container(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 8,
-                                vertical: 3,
-                              ),
-                              decoration: BoxDecoration(
-                                color: const Color(0xFFFFF2D8),
-                                borderRadius: BorderRadius.circular(10),
-                              ),
-                              child: Text(
-                                _localizedUiText(
-                                  context,
-                                  zhCN: '拼手气红包',
-                                  zhTW: '拼手氣紅包',
-                                  en: 'Lucky packet',
-                                ),
-                                style: const TextStyle(
-                                  fontSize: 11,
-                                  color: Color(0xFFC58A24),
-                                ),
-                              ),
-                            ),
-                        ],
-                      ),
-                      const SizedBox(height: 12),
-                      Divider(
-                        height: 1,
-                        color: isDark ? Colors.white10 : Colors.black12,
-                      ),
-                      if (_isLoadingDetail) ...[
+                      if (_isLoadingDetail)
                         const Padding(
                           padding: EdgeInsets.symmetric(vertical: 28),
                           child: Center(child: CircularProgressIndicator()),
-                        ),
-                      ] else if (_detailError != null) ...[
+                        )
+                      else if (_detailError != null)
                         Padding(
                           padding: const EdgeInsets.symmetric(vertical: 20),
                           child: Center(
@@ -647,9 +597,9 @@ class _RedPacketDetailSheetState extends State<_RedPacketDetailSheet> {
                               label: Text(_detailError!),
                             ),
                           ),
-                        ),
-                      ] else if ((_detail?.claims ?? const <RedPacketClaim>[])
-                          .isEmpty) ...[
+                        )
+                      else if ((_detail?.claims ?? const <RedPacketClaim>[])
+                          .isEmpty)
                         Padding(
                           padding: const EdgeInsets.symmetric(vertical: 28),
                           child: Center(
@@ -662,24 +612,80 @@ class _RedPacketDetailSheetState extends State<_RedPacketDetailSheet> {
                               ),
                               style: TextStyle(
                                 fontSize: 14,
-                                color:
-                                    isDark ? Colors.white38 : Colors.grey[500],
+                                color: isDark
+                                    ? Colors.white38
+                                    : Colors.grey[500],
                               ),
                             ),
                           ),
-                        ),
-                      ] else ...[
+                        )
+                      else ...[
                         for (final claim in _detail!.claims) ...[
                           _buildClaimItem(context, claim, isDark),
                           if (claim != _detail!.claims.last)
                             Divider(
                               height: 1,
                               indent: 52,
-                              color: isDark ? Colors.white10 : Colors.black12,
+                              color:
+                                  isDark ? Colors.white10 : Colors.black12,
                             ),
                         ],
                       ],
-                      const SizedBox(height: 8),
+                      const SizedBox(height: 12),
+                      Divider(
+                        height: 1,
+                        color: isDark ? Colors.white10 : Colors.black12,
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(0, 12, 0, 16),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.center,
+                          children: [
+                            Expanded(
+                              child: Text(
+                                _localizedUiText(
+                                  context,
+                                  zhCN:
+                                      '已领取 $claimedCount/${redPacket.totalCount} 个，共 ${widget.currency}${claimedTotal.toStringAsFixed(2)}',
+                                  zhTW:
+                                      '已領取 $claimedCount/${redPacket.totalCount} 個，共 ${widget.currency}${claimedTotal.toStringAsFixed(2)}',
+                                  en:
+                                      '$claimedCount/${redPacket.totalCount} claimed, ${widget.currency}${claimedTotal.toStringAsFixed(2)} total',
+                                ),
+                                style: TextStyle(
+                                  fontSize: 13,
+                                  color: isDark
+                                      ? Colors.white54
+                                      : Colors.grey[600],
+                                ),
+                              ),
+                            ),
+                            if (redPacket.type == RedPacketType.lucky)
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 8,
+                                  vertical: 3,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFFFFF2D8),
+                                  borderRadius: BorderRadius.circular(10),
+                                ),
+                                child: Text(
+                                  _localizedUiText(
+                                    context,
+                                    zhCN: '拼手气红包',
+                                    zhTW: '拼手氣紅包',
+                                    en: 'Lucky packet',
+                                  ),
+                                  style: const TextStyle(
+                                    fontSize: 11,
+                                    color: Color(0xFFC58A24),
+                                  ),
+                                ),
+                              ),
+                          ],
+                        ),
+                      ),
                     ],
                   ),
                 ),

@@ -6,4 +6,10 @@
     <files-path
         name="files"
         path="." />
+    <cache-path
+        name="hot_update_cache"
+        path="hot_update/" />
+    <external-cache-path
+        name="hot_update_external_cache"
+        path="hot_update/" />
 </paths>

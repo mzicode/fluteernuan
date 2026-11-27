@@ -602,6 +602,7 @@ class _QRScannerPageState extends ConsumerState<QRScannerPage>
             int.tryParse(data['chat_type']?.toString() ?? '2') ?? 2;
         final routeType = chatTypeValue == 3 ? 'channel' : 'group';
 
+        await ref.read(chatListProvider.notifier).markLocalGroupJoined(chatId);
         await ref.read(chatListProvider.notifier).refresh();
         if (!mounted) return;
 

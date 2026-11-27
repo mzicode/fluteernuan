@@ -8,7 +8,6 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:device_info_plus/device_info_plus.dart';
-import 'package:flutter_callkit_incoming/flutter_callkit_incoming.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'api/api_client.dart';
@@ -538,34 +537,6 @@ class PushNotificationService {
     }
   }
 
-  Future<void> _ensureAndroidCallNotificationPermissions() async {
-    if (!Platform.isAndroid) return;
-
-    try {
-      await FlutterCallkitIncoming.requestNotificationPermission({
-        'title': 'Notification permission',
-        'rationaleMessagePermission':
-            'Notification permission is required for incoming calls.',
-        'postNotificationMessageRequired':
-            'Please allow notifications to receive incoming calls.',
-      });
-    } catch (e) {
-      _log('[Push] Call notification permission request failed: $e');
-    }
-
-    try {
-      final androidInfo = await DeviceInfoPlugin().androidInfo;
-      if (androidInfo.version.sdkInt < 34) return;
-
-      final canUse = await FlutterCallkitIncoming.canUseFullScreenIntent();
-      if (canUse != true) {
-        await FlutterCallkitIncoming.requestFullIntentPermission();
-      }
-    } catch (e) {
-      _log('[Push] Full-screen incoming call permission check failed: $e');
-    }
-  }
-
   // ─── 公共入口 ─────────────────────────────────────────────────────────────
 
   /// 请求推送权限并注册
@@ -579,8 +550,6 @@ class PushNotificationService {
     _log('[Push] register() called, platform: ${Platform.operatingSystem}');
 
     if (Platform.isAndroid) {
-      await _ensureAndroidCallNotificationPermissions();
-      if (!_isCurrentAccount(account)) return;
       final preferredChannel = await _initAndroidVendorPush();
       if (!_isCurrentAccount(account)) return;
       if (preferredChannel != 'fcm' && !_vendorInitRequestedToken) {

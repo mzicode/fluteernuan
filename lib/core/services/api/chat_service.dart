@@ -183,7 +183,7 @@ class Chat {
       ownerId: json['owner_id']?.toString(),
       memberCount: json['member_count'] ?? 0,
       onlineCount: json['online_count'] ?? 0,
-      myRole: json['my_role'] ?? 0,
+      myRole: _parseVipLevel(json['my_role'] ?? json['role']),
       pendingRequest: json['pending_request'] ?? false,
       isPublic: json['is_public'] ?? false,
       inviteLink: json['invite_link'],
@@ -415,6 +415,93 @@ class ChatMember {
   }
 }
 
+class InviteCandidate {
+  final String userId;
+  final String uuid;
+  final String name;
+  final String? remark;
+  final String nickname;
+  final String username;
+  final String? shortId;
+  final String? avatar;
+  final String? emojiAvatar;
+  final String? nicknameColor;
+
+  InviteCandidate({
+    required this.userId,
+    required this.uuid,
+    required this.name,
+    this.remark,
+    this.nickname = '',
+    this.username = '',
+    this.shortId,
+    this.avatar,
+    this.emojiAvatar,
+    this.nicknameColor,
+  });
+
+  String get displayName {
+    if (name.trim().isNotEmpty) return name.trim();
+    if ((remark ?? '').trim().isNotEmpty) return remark!.trim();
+    if (nickname.trim().isNotEmpty) return nickname.trim();
+    return username.trim();
+  }
+
+  String? get visibleShortId {
+    final value = shortId?.trim() ?? '';
+    return value.isEmpty ? null : value;
+  }
+
+  factory InviteCandidate.fromJson(Map<String, dynamic> json) {
+    String? avatarUrl = json['avatar']?.toString();
+    if (avatarUrl != null && avatarUrl.isNotEmpty) {
+      avatarUrl = ApiConfig.getMediaUrl(avatarUrl);
+    }
+    final rawShortId = json['short_id'];
+    final shortId = rawShortId == null ? null : rawShortId.toString().trim();
+    final userId = (json['user_id'] ?? json['uuid'] ?? '').toString().trim();
+    return InviteCandidate(
+      userId: userId,
+      uuid: (json['uuid'] ?? userId).toString().trim(),
+      name: (json['name'] ?? '').toString(),
+      remark: json['remark']?.toString(),
+      nickname: (json['nickname'] ?? '').toString(),
+      username: (json['username'] ?? '').toString(),
+      shortId: shortId == null || shortId.isEmpty ? null : shortId,
+      avatar: avatarUrl,
+      emojiAvatar: json['emoji_avatar']?.toString(),
+      nicknameColor: json['nickname_color']?.toString(),
+    );
+  }
+}
+
+class InviteCandidatePage {
+  final List<InviteCandidate> list;
+  final int total;
+  final int page;
+  final int pageSize;
+
+  InviteCandidatePage({
+    required this.list,
+    required this.total,
+    required this.page,
+    required this.pageSize,
+  });
+
+  factory InviteCandidatePage.fromJson(Map<String, dynamic> json) {
+    return InviteCandidatePage(
+      list: (json['list'] as List?)
+              ?.whereType<Map>()
+              .map((e) => InviteCandidate.fromJson(Map<String, dynamic>.from(e)))
+              .toList() ??
+          const [],
+      total: json['total'] ?? 0,
+      page: json['page'] ?? 1,
+      pageSize: json['page_size'] ?? 100,
+    );
+  }
+}
+
 /// 用户会话模型（会话列表项）
 class UserChat {
   final String id;
@@ -563,6 +650,8 @@ class Message {
   final String senderVipBadge;
   final String senderVipBadgeIcon;
   final bool senderVipActive;
+  final int senderRole;
+  final bool senderOfficial;
   final int type;
   final MessageContent content;
   final ReplyInfo? replyTo;
@@ -592,6 +681,8 @@ class Message {
     this.senderVipBadge = '',
     this.senderVipBadgeIcon = '',
     this.senderVipActive = false,
+    this.senderRole = 0,
+    this.senderOfficial = false,
     required this.type,
     required this.content,
     this.replyTo,
@@ -632,6 +723,12 @@ class Message {
       senderVipBadge: senderVip['badge']?.toString() ?? '',
       senderVipBadgeIcon: _parseVipBadgeIcon(senderVip['badge_icon']),
       senderVipActive: senderVip['is_active'] == true,
+      senderRole: int.tryParse(
+            (json['sender_role'] ?? json['group_role'])?.toString() ?? '',
+          ) ??
+          0,
+      senderOfficial:
+          json['sender_is_official'] == true || json['is_official'] == true,
       type: json['type'] ?? 1,
       content: MessageContent.fromJson(json['content'] ?? {}),
       replyTo: json['reply_to'] != null
@@ -1081,20 +1178,28 @@ class ReplyInfo {
   final String senderId;
   final String senderName;
   final String content;
+  /// 被引用原消息类型（1=文本 … 12=红包 13=转账 等）
+  final int? msgType;
 
   ReplyInfo({
     required this.msgId,
     required this.senderId,
     required this.senderName,
     required this.content,
+    this.msgType,
   });
 
   factory ReplyInfo.fromJson(Map<String, dynamic> json) {
+    final rawType = json['msg_type'] ?? json['type'] ?? json['content_type'];
     return ReplyInfo(
-      msgId: json['msg_id'] ?? '',
-      senderId: json['sender_id'] ?? '',
-      senderName: json['sender_name'] ?? '',
-      content: json['content'] ?? '',
+      msgId: (json['msg_id'] ?? json['message_id'] ?? json['id'] ?? '')
+          .toString(),
+      senderId: (json['sender_id'] ?? '').toString(),
+      senderName: (json['sender_name'] ?? '').toString(),
+      content: (json['content'] ?? '').toString(),
+      msgType: rawType is int
+          ? rawType
+          : int.tryParse(rawType?.toString() ?? ''),
     );
   }
 
@@ -1103,6 +1208,7 @@ class ReplyInfo {
         'sender_id': senderId,
         'sender_name': senderName,
         'content': content,
+        if (msgType != null) 'msg_type': msgType,
       };
 }
 
@@ -1614,9 +1720,22 @@ class ChatService {
     );
   }
 
-  /// 获取群成员列表
-  Future<ApiResponse<List<ChatMember>>> getMembers(String chatId) async {
-    final response = await _api.get('/chat/$chatId/members');
+  /// 获取群成员列表。
+  ///
+  /// Omitting pagination keeps the legacy full-list behavior for callers that
+  /// still need the complete member cache.
+  Future<ApiResponse<List<ChatMember>>> getMembers(
+    String chatId, {
+    int? page,
+    int? pageSize,
+  }) async {
+    final response = await _api.get(
+      '/chat/$chatId/members',
+      queryParameters: {
+        if (page != null) 'page': page,
+        if (pageSize != null) 'page_size': pageSize,
+      },
+    );
 
     if (response.isSuccess && response.data != null) {
       // 兼容后端返回 List 或 { list: [...] } 两种结构
@@ -1648,7 +1767,7 @@ class ChatService {
     String chatId,
     String keyword, {
     int page = 1,
-    int pageSize = 200,
+    int pageSize = 50,
   }) async {
     final response = await _api.get(
       '/chat/$chatId/members/search',
@@ -1684,8 +1803,59 @@ class ChatService {
     );
   }
 
+  Future<ApiResponse<InviteCandidatePage>> getInviteCandidates(
+    String chatId, {
+    int page = 1,
+    int pageSize = 100,
+    String? keyword,
+  }) async {
+    final response = await _api.get(
+      '/chat/$chatId/invite-candidates',
+      queryParameters: {
+        'page': page,
+        'page_size': pageSize,
+        if (keyword != null && keyword.trim().isNotEmpty)
+          'keyword': keyword.trim(),
+      },
+    );
+
+    if (response.isSuccess && response.data is Map) {
+      return ApiResponse(
+        code: response.code,
+        message: response.message,
+        data: InviteCandidatePage.fromJson(
+          Map<String, dynamic>.from(response.data as Map),
+        ),
+      );
+    }
+
+    return ApiResponse(
+      code: response.code,
+      message: response.message,
+      data: InviteCandidatePage(
+        list: const [],
+        total: 0,
+        page: page,
+        pageSize: pageSize,
+      ),
+    );
+  }
+
   Future<ApiResponse> addMembers(String chatId, List<String> userIds) async {
-    return _api.post('/chat/$chatId/members', data: {'user_ids': userIds});
+    // 文档要求：user_ids 去重且禁止空数组提交。
+    final ids = userIds
+        .map((e) => e.trim())
+        .where((e) => e.isNotEmpty)
+        .toSet()
+        .toList(growable: false);
+    if (ids.isEmpty) {
+      return ApiResponse(
+        code: 400,
+        message: '参数错误',
+        data: null,
+      );
+    }
+    return _api.post('/chat/$chatId/members', data: {'user_ids': ids});
   }
 
   /// 移除成员
@@ -1809,12 +1979,22 @@ class ChatService {
       },
     );
 
-    if (response.isSuccess && response.data != null) {
-      final list = await _parseMessageList(response.data as List? ?? const []);
+    if (response.isSuccess && response.data is List) {
+      final list = await _parseMessageList(response.data as List);
       return ApiResponse(
         code: response.code,
         message: response.message,
         data: list,
+      );
+    }
+
+    // Do not turn a malformed or missing successful payload into an
+    // authoritative empty history. Only an actual empty array means the
+    // server confirmed that the chat has no messages.
+    if (response.isSuccess) {
+      return ApiResponse(
+        code: -1,
+        message: 'Invalid message list response',
       );
     }
 

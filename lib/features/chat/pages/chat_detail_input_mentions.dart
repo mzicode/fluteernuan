@@ -15,6 +15,10 @@ extension _ChatDetailInputMentions on _ChatDetailPageState {
       ref.read(chatListProvider.notifier).updateDraft(widget.chatId, text);
     });
 
+    if (widget.chatType != ChatType.private) {
+      _detectMentionQuery();
+    }
+
     if (_wsService == null) return;
 
     if (text.isEmpty) {
@@ -23,9 +27,6 @@ extension _ChatDetailInputMentions on _ChatDetailPageState {
         _wsService!.sendTyping(widget.chatId, isTyping: false);
       }
       _typingTimer?.cancel();
-      if (widget.chatType != ChatType.private) {
-        _detectMentionQuery();
-      }
       return;
     }
 
@@ -41,11 +42,6 @@ extension _ChatDetailInputMentions on _ChatDetailPageState {
         _wsService!.sendTyping(widget.chatId, isTyping: false);
       }
     });
-
-    // 群聊/频道才检测 @ 提及
-    if (widget.chatType != ChatType.private) {
-      _detectMentionQuery();
-    }
   }
 
   /// 检测光标前是否有未完成的 @mention 模式
@@ -159,7 +155,7 @@ extension _ChatDetailInputMentions on _ChatDetailPageState {
     return membersAsync.when(
       data: (members) {
         final currentUserId = ref.read(authServiceProvider).user?.uuid;
-        final detail = ref.read(chatDetailProvider(widget.chatId)).valueOrNull;
+        final detail = ref.watch(chatDetailProvider(widget.chatId)).valueOrNull;
         final normalizedQuery = query.trim().toLowerCase();
         final canMentionAll = detail != null &&
             detail.status != 2 &&

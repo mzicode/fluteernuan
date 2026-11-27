@@ -132,14 +132,13 @@ extension _MessageBubbleAlbum on MessageBubble {
     MessageItem item, {
     int? overflowCount,
   }) {
-    final source = _albumImageSource(item);
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
       onTap: () => _openAlbumImagePreview(context, item),
       child: Stack(
         fit: StackFit.expand,
         children: [
-          _buildAlbumImage(source),
+          _buildAlbumImage(item),
           if (overflowCount != null)
             Container(
               color: Colors.black.withOpacity(0.45),
@@ -158,10 +157,8 @@ extension _MessageBubbleAlbum on MessageBubble {
     );
   }
 
-  Widget _buildAlbumImage(String source) {
-    if (source.isEmpty) {
-      return _buildAlbumFallback();
-    }
+  Widget _buildAlbumImage(MessageItem item) {
+    final source = _albumImageSource(item);
 
     if (source.startsWith('data:image/')) {
       final bytes = _decodeDataImage(source);
@@ -180,20 +177,17 @@ extension _MessageBubbleAlbum on MessageBubble {
     }
 
     final imageUrl = ChatMediaCacheManager.normalizeUrl(source);
-    if (imageUrl.isEmpty) {
-      return _buildAlbumFallback();
-    }
-
-    return CachedNetworkImage(
-      imageUrl: imageUrl,
-      cacheManager: ChatMediaCacheManager.instance,
+    return _RetryableChatNetworkImage(
+      chatId: item.chatId,
+      imageUrl: imageUrl.isEmpty ? null : imageUrl,
+      cacheKey: _privateMediaCacheKey(item),
+      mediaId: _privateMediaId(item),
       fit: BoxFit.cover,
       memCacheWidth: 560,
       memCacheHeight: 560,
       maxWidthDiskCache: 900,
       maxHeightDiskCache: 900,
-      placeholder: (_, __) => Container(color: Colors.black12),
-      errorWidget: (_, __, ___) => _buildAlbumFallback(),
+      enableTapRetry: false,
     );
   }
 

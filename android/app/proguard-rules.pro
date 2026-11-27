@@ -8,6 +8,39 @@
 
 # Agora RTC
 -keep class io.agora.** { *; }
+-dontwarn io.agora.**
+
+# NERTC / 网易云信
+# Official com.netease.yunxin:nertc AAR ships an empty proguard.txt, so R8 freely
+# renames JNI entrypoints (e.g. NERtcEx -> i6.g) and can crash on joinChannel /
+# enableLocalVideo — seen as "connect instant crash" on release builds.
+-keep class com.netease.lava.** { *; }
+-keep interface com.netease.lava.** { *; }
+-keep enum com.netease.lava.** { *; }
+-keep class com.netease.yunxin.** { *; }
+-keep interface com.netease.yunxin.** { *; }
+-keep enum com.netease.yunxin.** { *; }
+-keep class com.netease.nertcflutter.** { *; }
+-keep interface com.netease.nertcflutter.** { *; }
+-keepclassmembers class com.netease.lava.** {
+    *;
+}
+-keepclassmembers class com.netease.yunxin.** {
+    *;
+}
+-keepclassmembers class com.netease.nertcflutter.** {
+    *;
+}
+-keepclasseswithmembernames class com.netease.** {
+    native <methods>;
+}
+-dontwarn com.netease.lava.**
+-dontwarn com.netease.yunxin.**
+-dontwarn com.netease.nertcflutter.**
+
+# CallKit incoming (used on Android call accept path)
+-keep class com.hiennv.flutter_callkit_incoming.** { *; }
+-dontwarn com.hiennv.flutter_callkit_incoming.**
 
 # Gson / JSON
 -keepattributes Signature

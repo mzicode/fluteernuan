@@ -18,8 +18,11 @@ extension _ChatDetailSelectionActions on _ChatDetailPageState {
 
     if (selectedMessages.isEmpty) return;
     if (!_canForwardFromCurrentChat ||
-        selectedMessages.any((message) => message.burnAfterRead)) {
-      _showForwardBlockedHint();
+        selectedMessages.any((message) => !message.isForwardableContent)) {
+      _showForwardBlockedHint(
+        redPacket: selectedMessages
+            .any((message) => message.type == MessageItemType.redPacket),
+      );
       return;
     }
 
@@ -84,8 +87,12 @@ extension _ChatDetailSelectionActions on _ChatDetailPageState {
     required _SelectedForwardMode mode,
   }) {
     if (!_canForwardFromCurrentChat ||
-        messages.any((message) => message.burnAfterRead)) {
-      _showForwardBlockedHint();
+        messages.any((message) => !message.isForwardableContent)) {
+      _showForwardBlockedHint(
+        redPacket: messages.any(
+          (message) => message.type == MessageItemType.redPacket,
+        ),
+      );
       return;
     }
     final isDark = Theme.of(context).brightness == Brightness.dark;

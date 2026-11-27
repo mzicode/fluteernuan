@@ -329,17 +329,17 @@ class _ChatMediaPickerPageState extends State<_ChatMediaPickerPage>
   @override
   Widget build(BuildContext context) {
     final background = widget.isDark ? const Color(0xFF111111) : Colors.white;
-    final foreground = widget.isDark ? Colors.white : const Color(0xFF111111);
 
     return Scaffold(
       backgroundColor: background,
       appBar: AppBar(
-        backgroundColor: background,
-        foregroundColor: foreground,
+        backgroundColor: const Color(0xFF111111),
+        foregroundColor: Colors.white,
+        iconTheme: const IconThemeData(color: Colors.white),
         surfaceTintColor: Colors.transparent,
         elevation: 0,
         leading: IconButton(
-          icon: const Icon(Icons.close_rounded),
+          icon: const Icon(Icons.close_rounded, color: Colors.white),
           onPressed: () => Navigator.pop(context),
         ),
         title: GestureDetector(
@@ -856,6 +856,7 @@ class _ChatMediaPreviewPageState extends State<_ChatMediaPreviewPage> {
       appBar: AppBar(
         backgroundColor: Colors.black,
         foregroundColor: Colors.white,
+        iconTheme: const IconThemeData(color: Colors.white),
         systemOverlayStyle: AppSystemUiStyles.onDarkBackground,
         surfaceTintColor: Colors.transparent,
         title: Text('${_pageIndex + 1}/${widget.assets.length}'),

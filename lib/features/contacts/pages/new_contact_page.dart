@@ -490,7 +490,6 @@ class _NewContactPageState extends ConsumerState<NewContactPage> {
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final l10n = AppLocalizations(ref.watch(languageProvider));
     final friendAddMode =
         ref.watch(systemSettingsProvider).valueOrNull?.friendAddMode ??
             FriendAddMode.approval;
@@ -515,7 +514,13 @@ class _NewContactPageState extends ConsumerState<NewContactPage> {
                 },
               )
             : null,
-        title: Text(l10n.search),
+        title: Text(
+          _text(
+            zhCN: '添加',
+            zhTW: '新增',
+            en: 'Add',
+          ),
+        ),
         centerTitle: true,
       ),
       body: Column(
@@ -528,9 +533,9 @@ class _NewContactPageState extends ConsumerState<NewContactPage> {
               focusNode: _focusNode,
               decoration: InputDecoration(
                 hintText: _text(
-                  zhCN: '输入ID或手机号搜索用户',
-                  zhTW: '輸入 ID 或手機號搜尋使用者',
-                  en: 'Enter an ID or phone number to search users',
+                  zhCN: '输入ID或手机号添加好友',
+                  zhTW: '輸入 ID 或手機號新增好友',
+                  en: 'Enter an ID or phone number to add a friend',
                 ),
                 hintStyle: TextStyle(
                   color: AppColors.textTertiaryFor(context),
@@ -577,62 +582,6 @@ class _NewContactPageState extends ConsumerState<NewContactPage> {
               onSubmitted: _search,
             ),
           ),
-
-          // 提示文字
-          if (_searchController.text.isEmpty && _allResults.isEmpty)
-            Expanded(
-              child: Center(
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(
-                      Icons.person_search_rounded,
-                      size: 80,
-                      color: AppColors.textTertiaryFor(context),
-                    ),
-                    const SizedBox(height: 16),
-                    Text(
-                      l10n.get('search_user_to_chat') ??
-                          _text(
-                            zhCN: '搜索用户开始聊天',
-                            zhTW: '搜尋使用者開始聊天',
-                            en: 'Search for a user to start chatting',
-                          ),
-                      style: TextStyle(
-                        fontSize: 16,
-                        color: AppColors.textSecondaryFor(context),
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      l10n.get('no_need_add_friend') ??
-                          _text(
-                            zhCN: '无需添加好友，直接发起私聊',
-                            zhTW: '無需加好友，直接發起私聊',
-                            en: 'No need to add friends. Start a private chat directly',
-                          ),
-                      style: TextStyle(
-                        fontSize: 14,
-                        color: AppColors.textTertiaryFor(context),
-                      ),
-                    ),
-                    const SizedBox(height: 24),
-                    Text(
-                      l10n.get('also_search_public_groups') ??
-                          _text(
-                            zhCN: '也可搜索公开群组和频道',
-                            zhTW: '也可搜尋公開群組和頻道',
-                            en: 'You can also search public groups and channels',
-                          ),
-                      style: TextStyle(
-                        fontSize: 14,
-                        color: AppColors.textTertiaryFor(context),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
 
           // 加载中
           if (_isSearching)

@@ -7,6 +7,7 @@
 #include "generated_plugin_registrant.h"
 
 #include <agora_rtc_engine/agora_rtc_engine_plugin.h>
+#include <alog_windows/alog_windows_plugin_c_api.h>
 #include <audioplayers_windows/audioplayers_windows_plugin.h>
 #include <connectivity_plus/connectivity_plus_windows_plugin.h>
 #include <desktop_drop/desktop_drop_plugin.h>
@@ -22,6 +23,7 @@
 #include <isar_flutter_libs/isar_flutter_libs_plugin.h>
 #include <livekit_client/live_kit_plugin.h>
 #include <local_auth_windows/local_auth_plugin.h>
+#include <nertc_core/nertc_core_plugin_c_api.h>
 #include <pasteboard/pasteboard_plugin.h>
 #include <permission_handler_windows/permission_handler_windows_plugin.h>
 #include <record_windows/record_windows_plugin_c_api.h>
@@ -37,6 +39,8 @@
 void RegisterPlugins(flutter::PluginRegistry* registry) {
   AgoraRtcEnginePluginRegisterWithRegistrar(
       registry->GetRegistrarForPlugin("AgoraRtcEnginePlugin"));
+  AlogWindowsPluginCApiRegisterWithRegistrar(
+      registry->GetRegistrarForPlugin("AlogWindowsPluginCApi"));
   AudioplayersWindowsPluginRegisterWithRegistrar(
       registry->GetRegistrarForPlugin("AudioplayersWindowsPlugin"));
   ConnectivityPlusWindowsPluginRegisterWithRegistrar(
@@ -67,6 +71,8 @@ void RegisterPlugins(flutter::PluginRegistry* registry) {
       registry->GetRegistrarForPlugin("LiveKitPlugin"));
   LocalAuthPluginRegisterWithRegistrar(
       registry->GetRegistrarForPlugin("LocalAuthPlugin"));
+  NertcCorePluginCApiRegisterWithRegistrar(
+      registry->GetRegistrarForPlugin("NertcCorePluginCApi"));
   PasteboardPluginRegisterWithRegistrar(
       registry->GetRegistrarForPlugin("PasteboardPlugin"));
   PermissionHandlerWindowsPluginRegisterWithRegistrar(

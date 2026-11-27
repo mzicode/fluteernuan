@@ -25,6 +25,7 @@ class ContactItem {
   final String name;
   final String? remark;
   final String? username;
+  final String? shortId;
   final String? avatar;
   final String? phone;
   final String? bio;
@@ -40,6 +41,7 @@ class ContactItem {
     required this.name,
     this.remark,
     this.username,
+    this.shortId,
     this.avatar,
     this.phone,
     this.bio,
@@ -54,10 +56,18 @@ class ContactItem {
     required String name,
     String? remark,
     String? username,
+    String? shortId,
     String? phone,
     String? bio,
   }) {
-    return <String>[name, remark ?? '', username ?? '', phone ?? '', bio ?? '']
+    return <String>[
+      name,
+      remark ?? '',
+      username ?? '',
+      shortId ?? '',
+      phone ?? '',
+      bio ?? '',
+    ]
         .map((value) => value.trim().toLowerCase())
         .where((value) => value.isNotEmpty)
         .join(' ');
@@ -67,6 +77,7 @@ class ContactItem {
         name: name,
         remark: remark,
         username: username,
+        shortId: shortId,
         phone: phone,
         bio: bio,
       );
@@ -74,6 +85,16 @@ class ContactItem {
   String get stableKey {
     final normalizedUuid = uuid?.trim() ?? '';
     return normalizedUuid.isNotEmpty ? normalizedUuid : id;
+  }
+
+  String get apiUserId {
+    final normalizedUuid = uuid?.trim() ?? '';
+    return normalizedUuid.isNotEmpty ? normalizedUuid : id.trim();
+  }
+
+  String? get visibleShortId {
+    final normalizedShortId = shortId?.trim() ?? '';
+    return normalizedShortId.isEmpty ? null : normalizedShortId;
   }
 
   bool matchesQuery(String keyword) {
@@ -86,6 +107,7 @@ class ContactItem {
     String? name,
     String? remark,
     String? username,
+    String? shortId,
     String? avatar,
     String? phone,
     String? bio,
@@ -101,6 +123,7 @@ class ContactItem {
       name: name ?? this.name,
       remark: remark ?? this.remark,
       username: username ?? this.username,
+      shortId: shortId ?? this.shortId,
       avatar: avatar ?? this.avatar,
       phone: phone ?? this.phone,
       bio: bio ?? this.bio,
@@ -124,6 +147,8 @@ class ContactItem {
       name: json['name'] ?? json['nickname'] ?? '',
       remark: json['remark']?.toString(),
       username: json['username'],
+      shortId:
+          (json['short_id'] ?? json['shortId'] ?? json['yixin_id'])?.toString(),
       avatar: avatarUrl,
       phone: json['phone'],
       bio: json['bio'],
@@ -188,6 +213,73 @@ class FriendRequestSubmitResult {
     required this.created,
     required this.autoAccepted,
   });
+}
+
+/// A→B 好友关系（A 由当前登录 Token 决定）
+class ContactRelationship {
+  static const String statusFriends = 'friends';
+  static const String statusPendingOutgoing = 'pending_outgoing';
+  static const String statusPendingIncoming = 'pending_incoming';
+  static const String statusNone = 'none';
+  static const String statusSelf = 'self';
+
+  final String userUuid;
+  final bool isFriend;
+  final String relationshipStatus;
+
+  const ContactRelationship({
+    required this.userUuid,
+    required this.isFriend,
+    required this.relationshipStatus,
+  });
+
+  bool get isSelf => relationshipStatus == statusSelf;
+
+  /// 资料页是否允许发起聊天/语音/视频
+  bool get canStartConversation =>
+      isFriend || relationshipStatus == statusFriends;
+
+  static bool _truthy(dynamic value) {
+    if (value is bool) return value;
+    if (value is num) return value != 0;
+    if (value is String) {
+      final normalized = value.trim().toLowerCase();
+      return normalized == '1' ||
+          normalized == 'true' ||
+          normalized == 'yes' ||
+          normalized == 'y';
+    }
+    return false;
+  }
+
+  static String _normalizeStatus(dynamic value) {
+    final normalized = value?.toString().trim().toLowerCase() ?? '';
+    if (normalized.isEmpty) return statusNone;
+    // 兼容偶发的单数写法
+    if (normalized == 'friend') return statusFriends;
+    return normalized;
+  }
+
+  factory ContactRelationship.fromJson(Map<String, dynamic> json) {
+    // 兼容 data 再包一层，或字段落在根节点
+    Map<String, dynamic> payload = json;
+    final nested = json['data'];
+    if (nested is Map &&
+        (json['is_friend'] == null && json['relationship_status'] == null)) {
+      payload = Map<String, dynamic>.from(nested);
+    }
+
+    final status = _normalizeStatus(
+      payload['relationship_status'] ?? payload['relationshipStatus'],
+    );
+    final rawFriend = payload['is_friend'] ?? payload['isFriend'];
+    final isFriend = _truthy(rawFriend) || status == statusFriends;
+    return ContactRelationship(
+      userUuid: (payload['user_uuid'] ?? payload['userUuid'])?.toString() ?? '',
+      isFriend: isFriend,
+      relationshipStatus: status,
+    );
+  }
 }
 
 // 角标按账号创建独立实例；WebSocket 只提供变化信号，准确数量仍回源接口。
@@ -764,6 +856,17 @@ class ContactListNotifier extends StateNotifier<List<ContactItem>> {
     }
 
     return [];
+  }
+
+  /// 查询当前登录用户与目标用户的好友关系
+  Future<ContactRelationship?> fetchRelationship(String userUuid) async {
+    final normalized = userUuid.trim();
+    if (normalized.isEmpty) return null;
+    final response = await _api.get('/contact/relationship/$normalized');
+    if (!response.isSuccess || response.data is! Map) return null;
+    return ContactRelationship.fromJson(
+      Map<String, dynamic>.from(response.data as Map),
+    );
   }
 
   /// 添加联系人（调用API）

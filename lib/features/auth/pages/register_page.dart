@@ -1,33 +1,26 @@
-// 文件用途：实现 _PresetAvatar 页面及其交互流程，属于用户认证。
-// 核心逻辑：分阶段校验注册字段和验证码，提交注册请求后建立会话，并处理协议勾选和重复账号反馈。
+// 文件用途：实现单页注册流程，收集手机号、密码、姓名、邀请码和协议确认。
+// 核心逻辑：本地校验必要字段并检查手机号可用性；短信码是否展示由公开 bridge 开关决定。
 import 'dart:async';
-import 'package:universal_io/io.dart';
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter_animate/flutter_animate.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-import 'package:image_picker/image_picker.dart';
 
-import '../../../core/theme/app_colors.dart';
 import '../../../core/i18n/app_localizations.dart';
 import '../../../core/i18n/server_message_localizer.dart';
-import '../../../core/services/api/auth_service.dart';
-import '../../../core/services/api/api_client.dart';
-import '../../../core/services/api/system_settings_service.dart';
 import '../../../core/router/redirect_utils.dart';
-import '../../../core/services/upload_service.dart';
+import '../../../core/services/api/api_client.dart';
+import '../../../core/services/api/auth_service.dart';
 import '../../../core/services/device_service.dart';
-import '../../../core/utils/platform_utils.dart';
+import '../../../core/theme/app_colors.dart';
 import '../../../core/utils/phone_validation.dart';
-import '../../../shared/widgets/avatar_widget.dart';
+import '../../../core/utils/platform_utils.dart';
+import '../../../core/utils/sms_registration_settings_bridge.dart';
 import '../../../shared/widgets/desktop/auth_desktop_layout.dart';
 import 'agreement_page.dart';
 
-/// 注册页面
 String _registerText(
   BuildContext context, {
   required String zhCN,
@@ -44,28 +37,6 @@ String _registerText(
   }
 }
 
-// 关键声明：register page 是页面入口，负责组装局部状态、监听用户操作并把副作用交给 Provider/Service。
-class _PresetAvatar {
-  final String id;
-  final String assetPath;
-  final String gender;
-
-  const _PresetAvatar(this.id, this.assetPath, this.gender);
-}
-
-const _presetAvatars = <_PresetAvatar>[
-  _PresetAvatar('blue', 'assets/images/default_avatars/avatar_1.png', 'male'),
-  _PresetAvatar('mint', 'assets/images/default_avatars/avatar_2.png', 'female'),
-  _PresetAvatar('coral', 'assets/images/default_avatars/avatar_3.png', 'male'),
-  _PresetAvatar(
-    'lavender',
-    'assets/images/default_avatars/avatar_4.png',
-    'female',
-  ),
-  _PresetAvatar('amber', 'assets/images/default_avatars/avatar_5.png', 'male'),
-  _PresetAvatar('teal', 'assets/images/default_avatars/avatar_6.png', 'female'),
-];
-
 class RegisterPage extends ConsumerStatefulWidget {
   const RegisterPage({super.key});
 
@@ -73,96 +44,62 @@ class RegisterPage extends ConsumerStatefulWidget {
   ConsumerState<RegisterPage> createState() => _RegisterPageState();
 }
 
-class _RegisterPageState extends ConsumerState<RegisterPage> {
-  final _usernameController = TextEditingController();
+class _RegisterPageState extends ConsumerState<RegisterPage>
+    with WidgetsBindingObserver {
+  final _phoneController = TextEditingController();
   final _passwordController = TextEditingController();
   final _confirmPasswordController = TextEditingController();
   final _nicknameController = TextEditingController();
   final _inviteCodeController = TextEditingController();
-  final _phoneController = TextEditingController();
   final _smsCodeController = TextEditingController();
-  final _emailController = TextEditingController();
-  final _emailCodeController = TextEditingController();
 
-  int _currentStep = 0; // 0: 账号信息, 1: 个人资料
+  Timer? _usernameCheckTimer;
+  Timer? _smsCountdownTimer;
   bool _isLoading = false;
-  bool _obscurePassword = true;
-  bool _obscureConfirmPassword = true;
-  bool _agreedToTerms = false; // 是否同意协议
-  String _selectedGender = _presetAvatars.first.gender;
-  String? _avatarPath;
-  Uint8List? _avatarBytes;
-  _PresetAvatar? _selectedPresetAvatar = _presetAvatars.first;
-  String? _errorMessage; // 错误提示信息
-
-  // 用户名检测状态
   bool _isCheckingUsername = false;
   bool? _isUsernameAvailable;
+  bool _obscurePassword = true;
+  bool _obscureConfirmPassword = true;
+  bool _agreedToTerms = false;
+  bool _isLoadingSmsSettings = false;
+  bool _smsSettingsLoadFailed = false;
+  bool _isSendingSms = false;
+  int _smsSecondsLeft = 0;
+  SmsRegistrationBridgeSettings? _smsSettings;
   String? _usernameMessage;
-  Timer? _usernameCheckTimer;
-  bool _smsRegistrationRequired = false;
-  bool _emailRegistrationReady = false;
-  String _registrationChannel = 'phone';
-  bool _isSendingSMS = false;
-  int _smsCountdown = 0;
-  Timer? _smsTimer;
-  bool _isSendingEmail = false;
-  int _emailCountdown = 0;
-  Timer? _emailTimer;
+  String? _errorMessage;
 
-  // 流程逻辑：`initState` 先建立依赖和监听器，再启动异步任务；重复调用必须复用已有状态，失败时释放已建立的资源。
+  bool get _showSmsCode => _smsSettings?.showSmsCode == true;
+
   @override
   void initState() {
     super.initState();
-    _usernameController.addListener(_onUsernameChanged);
-    _loadRegisterSettings();
-  }
-
-  Future<void> _loadRegisterSettings() async {
-    try {
-      final settings = await ref
-          .read(systemSettingsServiceProvider)
-          .getSettings(forceRefresh: true);
-      if (!mounted) return;
-      setState(() {
-        _smsRegistrationRequired = settings.smsRegistrationRequired;
-        _emailRegistrationReady = settings.emailRegistrationReady;
-      });
-    } catch (_) {
-      // 使用默认值（邀请码选填）
-    }
+    WidgetsBinding.instance.addObserver(this);
+    _phoneController.addListener(_onPhoneChanged);
+    unawaited(_loadSmsSettings());
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _usernameCheckTimer?.cancel();
-    _usernameController.removeListener(_onUsernameChanged);
-    _usernameController.dispose();
+    _smsCountdownTimer?.cancel();
+    _phoneController
+      ..removeListener(_onPhoneChanged)
+      ..dispose();
     _passwordController.dispose();
     _confirmPasswordController.dispose();
     _nicknameController.dispose();
     _inviteCodeController.dispose();
-    _phoneController.dispose();
     _smsCodeController.dispose();
-    _emailController.dispose();
-    _emailCodeController.dispose();
-    _smsTimer?.cancel();
-    _emailTimer?.cancel();
     super.dispose();
   }
 
-  String _serverMessage({
-    required String? raw,
-    required String zhCN,
-    String? zhTW,
-    required String en,
-  }) {
-    return localizeServerMessage(
-      raw,
-      fallbackZhCN: zhCN,
-      fallbackZhTW: zhTW,
-      fallbackEn: en,
-    );
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      unawaited(_loadSmsSettings());
+    }
   }
 
   String _loginLocation() {
@@ -174,20 +111,17 @@ class _RegisterPageState extends ConsumerState<RegisterPage> {
   }
 
   void _goToLogin() {
+    HapticFeedback.selectionClick();
     context.go(_loginLocation());
   }
 
-  void _onUsernameChanged() {
-    final username = _usernameController.text.trim();
-    if (_phoneController.text != username) {
-      _phoneController.text = username;
-    }
-
-    // 取消之前的定时器
+  void _onPhoneChanged() {
+    final phone = _phoneController.text.trim();
     _usernameCheckTimer?.cancel();
+    _clearError();
 
-    // 重置状态
-    if (!isValidMainlandChinaMobile(username)) {
+    if (!isValidMainlandChinaMobile(phone)) {
+      if (!mounted) return;
       setState(() {
         _isUsernameAvailable = null;
         _usernameMessage = null;
@@ -196,45 +130,41 @@ class _RegisterPageState extends ConsumerState<RegisterPage> {
       return;
     }
 
-    // 防抖：500ms 后检测
-    _usernameCheckTimer = Timer(const Duration(milliseconds: 500), () {
-      _checkUsernameAvailability(username);
-    });
+    _usernameCheckTimer = Timer(
+      const Duration(milliseconds: 500),
+      () => _checkUsernameAvailability(phone),
+    );
   }
 
-  Future<void> _checkUsernameAvailability(String username) async {
-    if (!isValidMainlandChinaMobile(username)) return;
-
+  Future<void> _checkUsernameAvailability(String phone) async {
+    if (!isValidMainlandChinaMobile(phone) || !mounted) return;
     setState(() => _isCheckingUsername = true);
 
     try {
-      final api = ref.read(apiClientProvider);
-      final response = await api.post('/auth/check-username', data: {
-        'username': username,
+      final response = await ref.read(apiClientProvider).post(
+        '/auth/check-username',
+        data: {'username': phone},
+      );
+      if (!mounted || _phoneController.text.trim() != phone) return;
+      setState(() {
+        _isUsernameAvailable =
+            response.isSuccess && response.data?['available'] == true;
+        _usernameMessage = response.isSuccess
+            ? localizeServerMessage(
+                response.data?['message'] as String?,
+                fallbackZhCN:
+                    _isUsernameAvailable == true ? '该手机号可以注册' : '该手机号已注册',
+                fallbackZhTW:
+                    _isUsernameAvailable == true ? '該手機號碼可以註冊' : '該手機號碼已註冊',
+                fallbackEn: _isUsernameAvailable == true
+                    ? 'This mobile number is available'
+                    : 'This mobile number is already registered',
+              )
+            : null;
+        _isCheckingUsername = false;
       });
-
-      if (!mounted) return;
-
-      if (response.isSuccess && response.data != null) {
-        setState(() {
-          _isUsernameAvailable = response.data['available'] == true;
-          _usernameMessage = localizeServerMessage(
-            response.data['message'] as String?,
-            fallbackZhCN: '用户名状态获取失败',
-            fallbackZhTW: '取得使用者名稱狀態失敗',
-            fallbackEn: 'Failed to check username status.',
-          );
-          _isCheckingUsername = false;
-        });
-      } else {
-        setState(() {
-          _isUsernameAvailable = null;
-          _usernameMessage = null;
-          _isCheckingUsername = false;
-        });
-      }
-    } catch (e) {
-      if (!mounted) return;
+    } catch (_) {
+      if (!mounted || _phoneController.text.trim() != phone) return;
       setState(() {
         _isUsernameAvailable = null;
         _usernameMessage = null;
@@ -243,17 +173,96 @@ class _RegisterPageState extends ConsumerState<RegisterPage> {
     }
   }
 
+  Future<void> _loadSmsSettings() async {
+    if (_isLoadingSmsSettings) return;
+    setState(() {
+      _isLoadingSmsSettings = true;
+      _smsSettingsLoadFailed = false;
+    });
+    final settings = await loadSmsRegistrationBridgeSettings();
+    debugPrint(
+      '[SMS_BRIDGE] register_page settings=${settings == null ? 'null' : 'bind=${settings.smsBindReady} required=${settings.smsRegistrationRequired} show=${settings.showSmsCode}'} lastShow=$_showSmsCode failed=$_smsSettingsLoadFailed',
+    );
+    if (!mounted) return;
+    setState(() {
+      _isLoadingSmsSettings = false;
+      if (settings != null) {
+        _smsSettings = settings;
+        _smsSettingsLoadFailed = false;
+        if (!settings.showSmsCode) {
+          _smsCodeController.clear();
+          _smsCountdownTimer?.cancel();
+          _smsSecondsLeft = 0;
+        }
+      } else if (_smsSettings == null) {
+        _smsSettingsLoadFailed = true;
+      }
+    });
+    debugPrint(
+      '[SMS_BRIDGE] register_page applied show=$_showSmsCode failed=$_smsSettingsLoadFailed',
+    );
+  }
+
+  Future<void> _sendSmsCode() async {
+    if (!_showSmsCode || _isSendingSms || _smsSecondsLeft > 0) return;
+    final phone = _phoneController.text.trim();
+    if (!isValidMainlandChinaMobile(phone)) {
+      return _showError(_registerText(
+        context,
+        zhCN: '请输入正确的11位手机号',
+        zhTW: '請輸入正確的11位手機號碼',
+        en: 'Enter a valid 11-digit mobile number',
+      ));
+    }
+
+    setState(() {
+      _isSendingSms = true;
+      _errorMessage = null;
+    });
+    final response =
+        await ref.read(authServiceProvider.notifier).sendRegistrationCode(phone);
+    if (!mounted) return;
+    setState(() => _isSendingSms = false);
+    if (response.isSuccess) {
+      _startSmsCountdown();
+    } else {
+      _showError(
+        localizeServerMessage(
+          response.message,
+          fallbackZhCN: '验证码发送失败，请稍后重试',
+          fallbackZhTW: '驗證碼傳送失敗，請稍後重試',
+          fallbackEn: 'Failed to send the verification code.',
+        ),
+      );
+    }
+  }
+
+  void _startSmsCountdown() {
+    _smsCountdownTimer?.cancel();
+    setState(() => _smsSecondsLeft = 60);
+    _smsCountdownTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (!mounted) {
+        timer.cancel();
+        return;
+      }
+      if (_smsSecondsLeft <= 1) {
+        timer.cancel();
+        setState(() => _smsSecondsLeft = 0);
+      } else {
+        setState(() => _smsSecondsLeft--);
+      }
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final bgColor = isDark ? AppColors.darkBackground : AppColors.lightSurface;
-    final screenWidth = MediaQuery.of(context).size.width;
+    final screenWidth = MediaQuery.sizeOf(context).width;
 
-    // 桌面端或宽屏使用桌面布局
     if (PlatformUtils.isPhysicalDesktop || screenWidth >= 600) {
       return AuthDesktopLayout(
         showBackButton: true,
-        onBack: _goBack,
+        onBack: _goToLogin,
         title: _registerText(
           context,
           zhCN: '注册账号',
@@ -264,851 +273,350 @@ class _RegisterPageState extends ConsumerState<RegisterPage> {
       );
     }
 
-    // 移动端使用原始布局
     return Scaffold(
-      backgroundColor: bgColor,
+      backgroundColor: AppColors.backgroundFor(context),
+      appBar: AppBar(
+        backgroundColor: Colors.transparent,
+        surfaceTintColor: Colors.transparent,
+        centerTitle: true,
+        leading: IconButton(
+          onPressed: _goToLogin,
+          icon: const Icon(Icons.arrow_back_ios_new_rounded, size: 20),
+        ),
+        title: Text(
+          _registerText(
+            context,
+            zhCN: '注册账号',
+            zhTW: '註冊帳號',
+            en: 'Create Account',
+          ),
+          style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
+        ),
+      ),
       body: SafeArea(
-        child: Column(
-          children: [
-            // 顶部区域
-            _buildHeader(isDark),
-
-            // 主内容区
-            Expanded(
-              child: SingleChildScrollView(
-                padding: const EdgeInsets.symmetric(horizontal: 40),
-                child: _buildRegisterContent(isDark),
-              ),
-            ),
-
-            // 底部
-            _buildBottom(isDark),
-          ],
+        top: false,
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(24, 24, 24, 32),
+          child: _buildRegisterContent(isDark),
         ),
       ),
     );
   }
 
-  /// 注册内容（共享）
   Widget _buildRegisterContent(bool isDark) {
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        const SizedBox(height: 20),
-
-        // 步骤指示器
-        _buildStepIndicator(isDark),
-
-        const SizedBox(height: 40),
-
-        // 表单内容
-        AnimatedSwitcher(
-          duration: const Duration(milliseconds: 300),
-          child: _currentStep == 0
-              ? _buildAccountStep(isDark)
-              : _buildProfileStep(isDark),
-        ),
-
-        // 桌面端底部
-        if (PlatformUtils.isPhysicalDesktop ||
-            MediaQuery.of(context).size.width >= 600) ...[
-          const SizedBox(height: 24),
-          _buildBottomLink(isDark),
-          const SizedBox(height: 40),
-        ],
-      ],
-    );
-  }
-
-  /// 底部链接（仅桌面端在表单内显示）
-  Widget _buildBottomLink(bool isDark) {
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.center,
-      children: [
         Text(
           _registerText(
             context,
-            zhCN: '已有账号？',
-            zhTW: '已有帳號？',
-            en: 'Already have an account?',
+            zhCN: '欢迎加入',
+            zhTW: '歡迎加入',
+            en: 'Welcome',
           ),
           style: TextStyle(
-            fontSize: 14,
-            color: AppColors.textSecondaryFor(context),
+            fontSize: 34,
+            fontWeight: FontWeight.w800,
+            color: AppColors.textPrimaryFor(context),
           ),
         ),
-        TextButton(
-          onPressed: _goToLogin,
-          child: Text(
-            _registerText(
-              context,
-              zhCN: '立即登录',
-              zhTW: '立即登入',
-              en: 'Log in now',
-            ),
-            style: TextStyle(
-              fontSize: 14,
-              color: AppColors.linkFor(context),
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildHeader(bool isDark) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-      child: Row(
-        children: [
-          IconButton(
-            onPressed: _goBack,
-            icon: Icon(
-              Icons.arrow_back_ios_new_rounded,
-              color: isDark ? Colors.white : Colors.black,
-              size: 20,
-            ),
-          ),
-          Expanded(
-            child: Text(
-              _registerText(
-                context,
-                zhCN: '注册账号',
-                zhTW: '註冊帳號',
-                en: 'Create Account',
-              ),
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                fontSize: 17,
-                fontWeight: FontWeight.w600,
-                color: isDark ? Colors.white : Colors.black,
-              ),
-            ),
-          ),
-          const SizedBox(width: 48), // 平衡返回按钮
-        ],
-      ),
-    );
-  }
-
-  Widget _buildStepIndicator(bool isDark) {
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.center,
-      children: [
-        // 步骤1
-        _buildStepDot(0, isDark),
-        // 连接线
-        Container(
-          width: 60,
-          height: 2,
-          margin: const EdgeInsets.symmetric(horizontal: 8),
-          decoration: BoxDecoration(
-            color: _currentStep >= 1
-                ? AppColors.controlActiveFor(context)
-                : AppColors.dividerFor(context),
-            borderRadius: BorderRadius.circular(1),
-          ),
-        ),
-        // 步骤2
-        _buildStepDot(1, isDark),
-      ],
-    );
-  }
-
-  Widget _buildStepDot(int step, bool isDark) {
-    final isActive = _currentStep >= step;
-    final isCurrent = _currentStep == step;
-
-    return Container(
-      width: 32,
-      height: 32,
-      decoration: BoxDecoration(
-        color:
-            isActive ? AppColors.controlActiveFor(context) : Colors.transparent,
-        shape: BoxShape.circle,
-        border: Border.all(
-          color: isActive
-              ? AppColors.controlActiveFor(context)
-              : AppColors.dividerFor(context),
-          width: 2,
-        ),
-      ),
-      child: Center(
-        child: isCurrent && !isActive
-            ? Text(
-                '${step + 1}',
-                style: TextStyle(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w600,
-                  color: AppColors.textSecondaryFor(context),
-                ),
-              )
-            : isActive
-                ? const Icon(
-                    Icons.check_rounded,
-                    color: Colors.white,
-                    size: 18,
-                  )
-                : Text(
-                    '${step + 1}',
-                    style: TextStyle(
-                      fontSize: 14,
-                      fontWeight: FontWeight.w600,
-                      color: AppColors.textSecondaryFor(context),
-                    ),
-                  ),
-      ),
-    );
-  }
-
-  Widget _buildAccountStep(bool isDark) {
-    return Column(
-      key: const ValueKey('account'),
-      children: [
-        Text(
-          _registerText(
-            context,
-            zhCN: '创建账号',
-            zhTW: '建立帳號',
-            en: 'Create Your Account',
-          ),
-          style: TextStyle(
-            fontSize: 22,
-            fontWeight: FontWeight.bold,
-            color: isDark ? Colors.white : Colors.black,
-          ),
-        ),
-
         const SizedBox(height: 8),
-
         Text(
           _registerText(
             context,
-            zhCN: '设置您的登录账号和密码',
-            zhTW: '設定您的登入帳號和密碼',
-            en: 'Set your login account and password',
+            zhCN: '创建账号，开启更美好的体验',
+            zhTW: '建立帳號，開啟更美好的體驗',
+            en: 'Create an account to get started',
           ),
           style: TextStyle(
-            fontSize: 14,
+            fontSize: 15,
             color: AppColors.textSecondaryFor(context),
           ),
         ),
-
         const SizedBox(height: 32),
-
-        // 手机号同时作为登录账号
-        _buildUsernameField(isDark),
-
-        if (_smsRegistrationRequired) ...[
-          const SizedBox(height: 16),
-          _buildPhoneRegistrationFields(isDark),
+        _buildPhoneField(isDark),
+        if (_showSmsCode) ...[
+          const SizedBox(height: 14),
+          _buildSmsCodeField(),
+        ] else if (_smsSettingsLoadFailed) ...[
+          const SizedBox(height: 14),
+          _buildSmsSettingsRetry(),
         ],
-
-        const SizedBox(height: 16),
-
-        // 密码
+        const SizedBox(height: 14),
         _buildPasswordField(
           controller: _passwordController,
           hint: _registerText(
             context,
-            zhCN: '密码（6-20位）',
-            zhTW: '密碼（6-20位）',
-            en: 'Password (6-20 chars)',
+            zhCN: '请输入密码',
+            zhTW: '請輸入密碼',
+            en: 'Enter password',
           ),
           obscure: _obscurePassword,
-          onToggle: () => setState(() => _obscurePassword = !_obscurePassword),
-          isDark: isDark,
-          onChanged: (_) => _clearError(),
+          onToggle: () => setState(
+            () => _obscurePassword = !_obscurePassword,
+          ),
         ),
-
-        const SizedBox(height: 16),
-
-        // 确认密码
+        const SizedBox(height: 14),
         _buildPasswordField(
           controller: _confirmPasswordController,
           hint: _registerText(
             context,
-            zhCN: '确认密码',
-            zhTW: '確認密碼',
+            zhCN: '请再次输入密码',
+            zhTW: '請再次輸入密碼',
             en: 'Confirm password',
           ),
           obscure: _obscureConfirmPassword,
           onToggle: () => setState(
-              () => _obscureConfirmPassword = !_obscureConfirmPassword),
-          isDark: isDark,
-          onChanged: (_) => _clearError(),
-        ),
-
-        // 错误提示
-        if (_errorMessage != null && _currentStep == 0) ...[
-          const SizedBox(height: 16),
-          _buildErrorMessage(isDark),
-        ],
-
-        const SizedBox(height: 24),
-
-        _buildButton(
-          onPressed: _nextStep,
-          text: _registerText(
-            context,
-            zhCN: '下一步',
-            zhTW: '下一步',
-            en: 'Next',
+            () => _obscureConfirmPassword = !_obscureConfirmPassword,
           ),
         ),
-      ],
-    );
-  }
-
-  Widget _buildProfileStep(bool isDark) {
-    return Column(
-      key: const ValueKey('profile'),
-      children: [
-        // 头像
-        GestureDetector(
-          onTap: _pickAvatar,
-          child: Stack(
-            children: [
-              _avatarBytes != null
-                  ? ClipOval(
-                      child: Image.memory(
-                        _avatarBytes!,
-                        width: 100,
-                        height: 100,
-                        fit: BoxFit.cover,
-                      ),
-                    )
-                  : _avatarPath != null
-                      ? CircleAvatar(
-                          radius: 50,
-                          backgroundImage: FileImage(File(_avatarPath!)),
-                        )
-                      : _selectedPresetAvatar != null
-                          ? ClipOval(
-                              child: Image.asset(
-                                _selectedPresetAvatar!.assetPath,
-                                width: 100,
-                                height: 100,
-                                fit: BoxFit.cover,
-                              ),
-                            )
-                          : AvatarWidget(
-                              name: _nicknameController.text.isEmpty
-                                  ? '?'
-                                  : _nicknameController.text,
-                              size: 100,
-                            ),
-              Positioned(
-                bottom: 0,
-                right: 0,
-                child: Container(
-                  width: 32,
-                  height: 32,
-                  decoration: BoxDecoration(
-                    color: AppColors.controlActiveFor(context),
-                    shape: BoxShape.circle,
-                    border: Border.all(
-                      color: isDark ? const Color(0xFF0E0E0E) : Colors.white,
-                      width: 3,
-                    ),
-                  ),
-                  child: const Icon(
-                    Icons.camera_alt_rounded,
-                    color: Colors.white,
-                    size: 16,
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ).animate().fadeIn().scale(
-              begin: const Offset(0.9, 0.9),
-              curve: Curves.easeOut,
-              duration: 300.ms,
-            ),
-
-        const SizedBox(height: 24),
-
-        Text(
-          _registerText(
-            context,
-            zhCN: '完善资料',
-            zhTW: '完善資料',
-            en: 'Complete Profile',
-          ),
-          style: TextStyle(
-            fontSize: 22,
-            fontWeight: FontWeight.bold,
-            color: isDark ? Colors.white : Colors.black,
-          ),
-        ),
-
-        const SizedBox(height: 8),
-
-        Text(
-          _registerText(
-            context,
-            zhCN: '设置您的昵称和头像',
-            zhTW: '設定您的暱稱和頭像',
-            en: 'Set your nickname and avatar',
-          ),
-          style: TextStyle(
-            fontSize: 14,
-            color: AppColors.textSecondaryFor(context),
-          ),
-        ),
-
-        const SizedBox(height: 20),
-
-        _buildPresetAvatarPicker(isDark),
-
-        const SizedBox(height: 28),
-
-        // 昵称（支持中文）
+        const SizedBox(height: 14),
         _buildInputField(
           controller: _nicknameController,
           hint: _registerText(
             context,
-            zhCN: '昵称',
-            zhTW: '暱稱',
-            en: 'Nickname',
+            zhCN: '请输入姓名',
+            zhTW: '請輸入姓名',
+            en: 'Enter your name',
           ),
-          icon: Icons.face_rounded,
-          keyboardType: TextInputType.text,
-          isDark: isDark,
-          inputFormatters: [
-            LengthLimitingTextInputFormatter(50),
-          ],
-          enableIME: true, // 启用中文输入法
-          onChanged: (_) => _clearError(),
+          icon: Icons.person_outline_rounded,
+          inputFormatters: [LengthLimitingTextInputFormatter(50)],
         ),
-
-        // 错误提示
-        const SizedBox(height: 16),
-
-        if (_errorMessage != null && _currentStep == 1) ...[
-          const SizedBox(height: 16),
-          _buildErrorMessage(isDark),
-        ],
-
-        const SizedBox(height: 16),
-
-        // 邀请码
+        const SizedBox(height: 14),
         _buildInputField(
           controller: _inviteCodeController,
           hint: _registerText(
             context,
-            zhCN: '邀请人暖邻ID（必填）',
-            zhTW: '邀請人暖鄰ID（必填）',
-            en: 'Referrer Nuanlin ID (required)',
+            zhCN: '请输入邀请码（必填）',
+            zhTW: '請輸入邀請碼（必填）',
+            en: 'Enter invitation code (required)',
           ),
           icon: Icons.card_giftcard_rounded,
-          keyboardType: TextInputType.text,
-          isDark: isDark,
+          inputFormatters: [LengthLimitingTextInputFormatter(64)],
         ),
-
-        const SizedBox(height: 20),
-
-        // 协议勾选
-        _buildAgreementCheckbox(isDark),
-
-        const SizedBox(height: 20),
-
-        _buildButton(
-          onPressed: _register,
-          text: _registerText(
-            context,
-            zhCN: '完成注册',
-            zhTW: '完成註冊',
-            en: 'Finish Registration',
+        if (_errorMessage != null) ...[
+          const SizedBox(height: 14),
+          Text(
+            _errorMessage!,
+            textAlign: TextAlign.center,
+            style: const TextStyle(color: AppColors.error, fontSize: 13),
           ),
+        ],
+        const SizedBox(height: 20),
+        _buildAgreementCheckbox(),
+        const SizedBox(height: 24),
+        SizedBox(
+          width: double.infinity,
+          height: 52,
+          child: FilledButton(
+            onPressed: _isLoading ? null : _register,
+            style: FilledButton.styleFrom(
+              backgroundColor: AppColors.primaryFor(context),
+              foregroundColor: AppColors.onPrimaryFor(context),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(14),
+              ),
+            ),
+            child: _isLoading
+                ? SizedBox(
+                    width: 22,
+                    height: 22,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: AppColors.onPrimaryFor(context),
+                    ),
+                  )
+                : Text(
+                    _registerText(
+                      context,
+                      zhCN: '完成注册',
+                      zhTW: '完成註冊',
+                      en: 'Create Account',
+                    ),
+                    style: const TextStyle(
+                      fontSize: 17,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+          ),
+        ),
+        const SizedBox(height: 18),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Text(
+              _registerText(
+                context,
+                zhCN: '已有账号？',
+                zhTW: '已有帳號？',
+                en: 'Already have an account?',
+              ),
+              style: TextStyle(color: AppColors.textSecondaryFor(context)),
+            ),
+            TextButton(
+              onPressed: _goToLogin,
+              child: Text(
+                _registerText(
+                  context,
+                  zhCN: '立即登录',
+                  zhTW: '立即登入',
+                  en: 'Log in now',
+                ),
+              ),
+            ),
+          ],
         ),
       ],
     );
   }
 
-  /// 手机号输入框，手机号同时作为 username 提交
-  Widget _buildUsernameField(bool isDark) {
-    return Container(
-      decoration: BoxDecoration(
-        color: AppColors.inputBackgroundFor(context),
-        borderRadius: BorderRadius.circular(12),
-      ),
+  Widget _buildPhoneField(bool isDark) {
+    return _inputContainer(
       child: TextField(
-        controller: _usernameController,
+        controller: _phoneController,
         keyboardType: TextInputType.phone,
         autocorrect: false,
         enableSuggestions: false,
-        enableIMEPersonalizedLearning: false,
-        onChanged: (_) => _clearError(),
-        style: TextStyle(
-          fontSize: 16,
-          color: AppColors.textPrimaryFor(context),
-        ),
-        decoration: InputDecoration(
-          hintText: _registerText(
-            context,
-            zhCN: '手机号（11位）',
-            zhTW: '手機號碼（11位）',
-            en: 'Mobile number (11 digits)',
-          ),
-          hintStyle: TextStyle(
-            color: AppColors.inputHintFor(context),
-            fontSize: 15,
-          ),
-          prefixIcon: Icon(
-            Icons.phone_android_rounded,
-            color: AppColors.inputIconFor(context),
-            size: 22,
-          ),
-          suffixIcon: _buildUsernameStatusIcon(isDark),
-          border: InputBorder.none,
-          contentPadding:
-              const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
-        ),
         inputFormatters: [
           FilteringTextInputFormatter.digitsOnly,
           LengthLimitingTextInputFormatter(11),
         ],
+        style: TextStyle(color: AppColors.textPrimaryFor(context)),
+        decoration: InputDecoration(
+          hintText: _registerText(
+            context,
+            zhCN: '请输入手机号',
+            zhTW: '請輸入手機號碼',
+            en: 'Enter mobile number',
+          ),
+          hintStyle: TextStyle(color: AppColors.inputHintFor(context)),
+          prefixIcon: Icon(
+            Icons.phone_android_rounded,
+            color: AppColors.inputIconFor(context),
+          ),
+          suffixIcon: _buildUsernameStatusIcon(),
+          border: InputBorder.none,
+          contentPadding: const EdgeInsets.symmetric(vertical: 17),
+        ),
       ),
     );
   }
 
-  /// 用户名状态图标
-  Widget? _buildUsernameStatusIcon(bool isDark) {
-    if (!isValidMainlandChinaMobile(_usernameController.text.trim())) {
-      return null;
-    }
-
-    if (_isCheckingUsername) {
-      return Padding(
-        padding: const EdgeInsets.only(right: 12),
-        child: SizedBox(
-          width: 20,
-          height: 20,
-          child: CircularProgressIndicator(
-            strokeWidth: 2,
-            color: AppColors.textTertiaryFor(context),
-          ),
-        ),
-      );
-    }
-
-    if (_isUsernameAvailable == true) {
-      return Padding(
-        padding: const EdgeInsets.only(right: 12),
-        child: TweenAnimationBuilder<double>(
-          duration: const Duration(milliseconds: 300),
-          tween: Tween(begin: 0.0, end: 1.0),
-          builder: (context, value, child) {
-            return Transform.scale(
-              scale: value.clamp(0.0, 1.2),
-              child: Icon(
-                Icons.check_circle_rounded,
-                color: Colors.green,
-                size: 22,
-              ),
-            );
-          },
-        ),
-      );
-    }
-
-    if (_isUsernameAvailable == false) {
-      return Padding(
-        padding: const EdgeInsets.only(right: 12),
-        child: Icon(
-          Icons.cancel_rounded,
-          color: Colors.red,
-          size: 22,
-        ),
-      );
-    }
-
-    return null;
-  }
-
-  Widget _buildInputField({
-    required TextEditingController controller,
-    required String hint,
-    required IconData icon,
-    required TextInputType keyboardType,
-    required bool isDark,
-    List<TextInputFormatter>? inputFormatters,
-    bool enableIME = false, // 是否启用中文输入法
-    ValueChanged<String>? onChanged,
-  }) {
-    return Container(
-      decoration: BoxDecoration(
-        color: AppColors.inputBackgroundFor(context),
-        borderRadius: BorderRadius.circular(12),
-      ),
+  Widget _buildSmsCodeField() {
+    return _inputContainer(
       child: TextField(
-        controller: controller,
-        keyboardType: enableIME ? TextInputType.text : keyboardType,
-        autocorrect: enableIME,
-        enableSuggestions: enableIME,
-        onChanged: onChanged,
-        style: TextStyle(
-          fontSize: 16,
-          color: AppColors.textPrimaryFor(context),
-        ),
+        controller: _smsCodeController,
+        keyboardType: TextInputType.number,
+        onChanged: (_) => _clearError(),
+        inputFormatters: [
+          FilteringTextInputFormatter.digitsOnly,
+          LengthLimitingTextInputFormatter(6),
+        ],
+        style: TextStyle(color: AppColors.textPrimaryFor(context)),
         decoration: InputDecoration(
-          hintText: hint,
-          hintStyle: TextStyle(
-            color: AppColors.inputHintFor(context),
+          hintText: _registerText(
+            context,
+            zhCN: '请输入6位短信验证码',
+            zhTW: '請輸入6位短信驗證碼',
+            en: 'Enter the 6-digit SMS code',
           ),
+          hintStyle: TextStyle(color: AppColors.inputHintFor(context)),
           prefixIcon: Icon(
-            icon,
+            Icons.sms_outlined,
             color: AppColors.inputIconFor(context),
-            size: 22,
+          ),
+          suffixIcon: TextButton(
+            onPressed: (_smsSecondsLeft > 0 || _isSendingSms)
+                ? null
+                : _sendSmsCode,
+            style: TextButton.styleFrom(
+              foregroundColor: AppColors.linkFor(context),
+              disabledForegroundColor: AppColors.textTertiaryFor(context),
+            ),
+            child: _isSendingSms
+                ? const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : Text(
+                    _smsSecondsLeft > 0
+                        ? '${_smsSecondsLeft}s'
+                        : _registerText(
+                            context,
+                            zhCN: '发送验证码',
+                            zhTW: '發送驗證碼',
+                            en: 'Send Code',
+                          ),
+                  ),
           ),
           border: InputBorder.none,
-          contentPadding:
-              const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+          contentPadding: const EdgeInsets.symmetric(vertical: 17),
         ),
-        inputFormatters: inputFormatters,
       ),
     );
   }
 
-  Widget _buildPhoneRegistrationFields(bool isDark) {
-    return Column(
+  Widget _buildSmsSettingsRetry() {
+    return Row(
       children: [
-        Row(
-          children: [
-            Expanded(
-              child: _buildInputField(
-                controller: _smsCodeController,
-                hint: _registerText(
-                  context,
-                  zhCN: '短信验证码',
-                  zhTW: '短信驗證碼',
-                  en: 'SMS code',
+        Expanded(
+          child: Text(
+            _registerText(
+              context,
+              zhCN: '短信注册设置读取失败',
+              zhTW: '短信註冊設定讀取失敗',
+              en: 'Could not load SMS registration settings',
+            ),
+            style: TextStyle(
+              fontSize: 13,
+              color: AppColors.textSecondaryFor(context),
+            ),
+          ),
+        ),
+        TextButton(
+          onPressed: _isLoadingSmsSettings ? null : _loadSmsSettings,
+          child: _isLoadingSmsSettings
+              ? const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : Text(
+                  _registerText(
+                    context,
+                    zhCN: '重试',
+                    zhTW: '重試',
+                    en: 'Retry',
+                  ),
                 ),
-                icon: Icons.sms_outlined,
-                keyboardType: TextInputType.number,
-                isDark: isDark,
-                inputFormatters: [
-                  FilteringTextInputFormatter.digitsOnly,
-                  LengthLimitingTextInputFormatter(6),
-                ],
-                onChanged: (_) => _clearError(),
-              ),
-            ),
-            const SizedBox(width: 10),
-            SizedBox(
-              height: 52,
-              child: FilledButton.tonal(
-                key: const ValueKey('register_send_sms_code'),
-                onPressed: (_isSendingSMS || _smsCountdown > 0)
-                    ? null
-                    : _sendRegistrationCode,
-                child: _isSendingSMS
-                    ? const SizedBox(
-                        width: 18,
-                        height: 18,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : Text(
-                        _smsCountdown > 0
-                            ? '${_smsCountdown}s'
-                            : _registerText(
-                                context,
-                                zhCN: '获取验证码',
-                                zhTW: '取得驗證碼',
-                                en: 'Send code',
-                              ),
-                      ),
-              ),
-            ),
-          ],
         ),
       ],
     );
   }
 
-  Widget _buildRegistrationChannelSelector() {
-    return SizedBox(
-      width: double.infinity,
-      child: SegmentedButton<String>(
-        key: const ValueKey('register_channel_selector'),
-        segments: [
-          ButtonSegment<String>(
-            value: 'phone',
-            icon: const Icon(Icons.phone_android_rounded, size: 18),
-            label: Text(_registerText(
-              context,
-              zhCN: '手机',
-              zhTW: '手機',
-              en: 'Phone',
-            )),
-          ),
-          ButtonSegment<String>(
-            value: 'email',
-            icon: const Icon(Icons.email_outlined, size: 18),
-            label: Text(_registerText(
-              context,
-              zhCN: '邮箱',
-              zhTW: '電子信箱',
-              en: 'Email',
-            )),
-          ),
-        ],
-        selected: {_registrationChannel},
-        showSelectedIcon: false,
-        onSelectionChanged: (selection) {
-          setState(() {
-            _registrationChannel = selection.first;
-            _errorMessage = null;
-          });
-        },
+  Widget? _buildUsernameStatusIcon() {
+    if (!isValidMainlandChinaMobile(_phoneController.text.trim())) return null;
+    if (_isCheckingUsername) {
+      return Padding(
+        padding: const EdgeInsets.all(15),
+        child: CircularProgressIndicator(
+          strokeWidth: 2,
+          color: AppColors.textTertiaryFor(context),
+        ),
+      );
+    }
+    if (_isUsernameAvailable == null) return null;
+    return Tooltip(
+      message: _usernameMessage ?? '',
+      child: Icon(
+        _isUsernameAvailable == true
+            ? Icons.check_circle_rounded
+            : Icons.error_rounded,
+        color:
+            _isUsernameAvailable == true ? AppColors.success : AppColors.error,
       ),
     );
-  }
-
-  Widget _buildEmailRegistrationFields(bool isDark) {
-    return Column(
-      children: [
-        _buildInputField(
-          controller: _emailController,
-          hint: _registerText(
-            context,
-            zhCN: '邮箱地址',
-            zhTW: '電子信箱地址',
-            en: 'Email address',
-          ),
-          icon: Icons.email_outlined,
-          keyboardType: TextInputType.emailAddress,
-          isDark: isDark,
-          inputFormatters: [LengthLimitingTextInputFormatter(254)],
-          onChanged: (_) => _clearError(),
-        ),
-        const SizedBox(height: 12),
-        Row(
-          children: [
-            Expanded(
-              child: _buildInputField(
-                controller: _emailCodeController,
-                hint: _registerText(
-                  context,
-                  zhCN: '邮箱验证码',
-                  zhTW: '電子信箱驗證碼',
-                  en: 'Email code',
-                ),
-                icon: Icons.mark_email_read_outlined,
-                keyboardType: TextInputType.number,
-                isDark: isDark,
-                inputFormatters: [
-                  FilteringTextInputFormatter.digitsOnly,
-                  LengthLimitingTextInputFormatter(6),
-                ],
-                onChanged: (_) => _clearError(),
-              ),
-            ),
-            const SizedBox(width: 10),
-            SizedBox(
-              height: 52,
-              child: FilledButton.tonal(
-                key: const ValueKey('register_send_email_code'),
-                onPressed: (_isSendingEmail || _emailCountdown > 0)
-                    ? null
-                    : _sendRegistrationEmailCode,
-                child: _isSendingEmail
-                    ? const SizedBox(
-                        width: 18,
-                        height: 18,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : Text(
-                        _emailCountdown > 0
-                            ? '${_emailCountdown}s'
-                            : _registerText(
-                                context,
-                                zhCN: '获取验证码',
-                                zhTW: '取得驗證碼',
-                                en: 'Send code',
-                              ),
-                      ),
-              ),
-            ),
-          ],
-        ),
-      ],
-    );
-  }
-
-  Future<void> _sendRegistrationCode() async {
-    final phone = _phoneController.text.trim();
-    if (!isValidMainlandChinaMobile(phone)) {
-      _showError(_registerText(
-        context,
-        zhCN: '请输入有效的手机号',
-        zhTW: '請輸入有效的手機號碼',
-        en: 'Enter a valid phone number',
-      ));
-      return;
-    }
-    setState(() => _isSendingSMS = true);
-    final response = await ref
-        .read(authServiceProvider.notifier)
-        .sendRegistrationCode(phone);
-    if (!mounted) return;
-    setState(() => _isSendingSMS = false);
-    if (!response.isSuccess) {
-      _showError(response.message ?? '');
-      return;
-    }
-    _smsTimer?.cancel();
-    setState(() => _smsCountdown = 60);
-    _smsTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      if (!mounted || _smsCountdown <= 1) {
-        timer.cancel();
-        if (mounted) setState(() => _smsCountdown = 0);
-        return;
-      }
-      setState(() => _smsCountdown--);
-    });
-  }
-
-  Future<void> _sendRegistrationEmailCode() async {
-    final email = _emailController.text.trim();
-    if (!_isValidEmail(email)) {
-      _showError(_registerText(
-        context,
-        zhCN: '请输入有效的邮箱地址',
-        zhTW: '請輸入有效的電子信箱地址',
-        en: 'Enter a valid email address',
-      ));
-      return;
-    }
-    setState(() => _isSendingEmail = true);
-    final response = await ref
-        .read(authServiceProvider.notifier)
-        .sendRegistrationEmailCode(email);
-    if (!mounted) return;
-    setState(() => _isSendingEmail = false);
-    if (!response.isSuccess) {
-      _showError(response.message ?? '');
-      return;
-    }
-    _emailTimer?.cancel();
-    setState(() => _emailCountdown = 60);
-    _emailTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      if (!mounted || _emailCountdown <= 1) {
-        timer.cancel();
-        if (mounted) setState(() => _emailCountdown = 0);
-        return;
-      }
-      setState(() => _emailCountdown--);
-    });
-  }
-
-  bool _isValidEmail(String value) {
-    return RegExp(
-      r"^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$",
-    ).hasMatch(value);
   }
 
   Widget _buildPasswordField({
@@ -1116,31 +624,20 @@ class _RegisterPageState extends ConsumerState<RegisterPage> {
     required String hint,
     required bool obscure,
     required VoidCallback onToggle,
-    required bool isDark,
-    ValueChanged<String>? onChanged,
   }) {
-    return Container(
-      decoration: BoxDecoration(
-        color: AppColors.inputBackgroundFor(context),
-        borderRadius: BorderRadius.circular(12),
-      ),
+    return _inputContainer(
       child: TextField(
         controller: controller,
         obscureText: obscure,
-        onChanged: onChanged,
-        style: TextStyle(
-          fontSize: 16,
-          color: AppColors.textPrimaryFor(context),
-        ),
+        onChanged: (_) => _clearError(),
+        inputFormatters: [LengthLimitingTextInputFormatter(20)],
+        style: TextStyle(color: AppColors.textPrimaryFor(context)),
         decoration: InputDecoration(
           hintText: hint,
-          hintStyle: TextStyle(
-            color: AppColors.inputHintFor(context),
-          ),
+          hintStyle: TextStyle(color: AppColors.inputHintFor(context)),
           prefixIcon: Icon(
             Icons.lock_outline_rounded,
             color: AppColors.inputIconFor(context),
-            size: 22,
           ),
           suffixIcon: IconButton(
             onPressed: onToggle,
@@ -1149,455 +646,75 @@ class _RegisterPageState extends ConsumerState<RegisterPage> {
                   ? Icons.visibility_off_outlined
                   : Icons.visibility_outlined,
               color: AppColors.inputIconFor(context),
-              size: 20,
             ),
           ),
           border: InputBorder.none,
-          contentPadding:
-              const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+          contentPadding: const EdgeInsets.symmetric(vertical: 17),
         ),
-        inputFormatters: [
-          LengthLimitingTextInputFormatter(20),
-        ],
       ),
     );
   }
 
-  Widget _buildErrorMessage(bool isDark) {
-    // TG 风格 - 简洁的红色文字
-    return Text(
-      _errorMessage!,
-      style: TextStyle(
-        color: AppColors.error,
-        fontSize: 14,
-        fontWeight: FontWeight.w400,
-      ),
-      textAlign: TextAlign.center,
-    );
-  }
-
-  Widget _buildButton({
-    required VoidCallback onPressed,
-    required String text,
+  Widget _buildInputField({
+    required TextEditingController controller,
+    required String hint,
+    required IconData icon,
+    List<TextInputFormatter>? inputFormatters,
   }) {
-    return SizedBox(
-      width: double.infinity,
-      height: 50,
-      child: ElevatedButton(
-        onPressed: _isLoading ? null : onPressed,
-        style: ElevatedButton.styleFrom(
-          backgroundColor: AppColors.primaryFor(context),
-          foregroundColor: AppColors.onPrimaryFor(context),
-          elevation: 0,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(12),
-          ),
-        ),
-        child: _isLoading
-            ? SizedBox(
-                width: 22,
-                height: 22,
-                child: CircularProgressIndicator(
-                  strokeWidth: 2,
-                  color: AppColors.onPrimaryFor(context),
-                ),
-              )
-            : Text(
-                text,
-                style: const TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-      ),
-    );
-  }
-
-  Widget _buildBottom(bool isDark) {
-    return SafeArea(
-      child: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Text(
-                  _registerText(
-                    context,
-                    zhCN: '已有账号？',
-                    zhTW: '已有帳號？',
-                    en: 'Already have an account?',
-                  ),
-                  style: TextStyle(
-                    fontSize: 14,
-                    color: AppColors.textSecondaryFor(context),
-                  ),
-                ),
-                TextButton(
-                  onPressed: _goToLogin,
-                  child: Text(
-                    _registerText(
-                      context,
-                      zhCN: '立即登录',
-                      zhTW: '立即登入',
-                      en: 'Log in now',
-                    ),
-                    style: TextStyle(
-                      fontSize: 14,
-                      color: AppColors.linkFor(context),
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ],
+    return _inputContainer(
+      child: TextField(
+        controller: controller,
+        onChanged: (_) => _clearError(),
+        inputFormatters: inputFormatters,
+        style: TextStyle(color: AppColors.textPrimaryFor(context)),
+        decoration: InputDecoration(
+          hintText: hint,
+          hintStyle: TextStyle(color: AppColors.inputHintFor(context)),
+          prefixIcon: Icon(icon, color: AppColors.inputIconFor(context)),
+          border: InputBorder.none,
+          contentPadding: const EdgeInsets.symmetric(vertical: 17),
         ),
       ),
     );
   }
 
-  void _goBack() {
-    HapticFeedback.selectionClick();
-    if (_currentStep > 0) {
-      setState(() => _currentStep--);
-    } else {
-      _goToLogin();
-    }
+  Widget _inputContainer({required Widget child}) {
+    return Container(
+      decoration: BoxDecoration(
+        color: AppColors.inputBackgroundFor(context),
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: child,
+    );
   }
 
-  Future<void> _nextStep() async {
-    // 手机号同时作为登录账号
-    final username = _usernameController.text.trim();
-    if (!isValidMainlandChinaMobile(username)) {
-      _showError(
-        _registerText(
-          context,
-          zhCN: '请输入正确的11位手机号',
-          zhTW: '請輸入正確的11位手機號碼',
-          en: 'Enter a valid 11-digit mobile number',
-        ),
-      );
-      return;
-    }
-
-    // 检查用户名可用性
-    if (_isUsernameAvailable == false) {
-      _showError(
-        _usernameMessage ??
-            _registerText(
-              context,
-              zhCN: '该手机号已注册',
-              zhTW: '該手機號碼已註冊',
-              en: 'This mobile number is already registered',
-            ),
-      );
-      return;
-    }
-
-    if (_isCheckingUsername) {
-      _showError(
-        _registerText(
-          context,
-          zhCN: '正在检查手机号...',
-          zhTW: '正在檢查手機號碼...',
-          en: 'Checking mobile number...',
-        ),
-      );
-      return;
-    }
-
-    // 验证密码
-    if (_passwordController.text.isEmpty) {
-      _showError(
-        _registerText(
-          context,
-          zhCN: '请输入密码',
-          zhTW: '請輸入密碼',
-          en: 'Please enter a password',
-        ),
-      );
-      return;
-    }
-
-    if (_passwordController.text.length < 6) {
-      _showError(
-        _registerText(
-          context,
-          zhCN: '密码至少 6 位',
-          zhTW: '密碼至少 6 位',
-          en: 'Password must be at least 6 characters',
-        ),
-      );
-      return;
-    }
-
-    // 验证确认密码
-    if (_confirmPasswordController.text != _passwordController.text) {
-      _showError(
-        _registerText(
-          context,
-          zhCN: '两次输入的密码不一致',
-          zhTW: '兩次輸入的密碼不一致',
-          en: 'The two passwords do not match',
-        ),
-      );
-      return;
-    }
-
-    if (_smsRegistrationRequired) {
-      final phone = _usernameController.text.trim();
-      final smsCode = _smsCodeController.text.trim();
-      if (!isValidMainlandChinaMobile(phone) ||
-          !RegExp(r'^\d{6}$').hasMatch(smsCode)) {
-        _showError(_registerText(
-          context,
-          zhCN: '请填写有效手机号和6位短信验证码',
-          zhTW: '請填寫有效手機號和6位短信驗證碼',
-          en: 'Enter a valid phone number and 6-digit SMS code',
-        ));
-        return;
-      }
-
-      setState(() => _isLoading = true);
-      final response = await ref
-          .read(authServiceProvider.notifier)
-          .verifyRegistrationCode(phone: phone, smsCode: smsCode);
-      if (!mounted) return;
-      setState(() => _isLoading = false);
-      if (_usernameController.text.trim() != phone ||
-          _smsCodeController.text.trim() != smsCode) {
-        _showError(
-          _registerText(
-            context,
-            zhCN: '手机号或验证码已修改，请重新校验',
-            zhTW: '手機號碼或驗證碼已修改，請重新校驗',
-            en: 'The phone number or code changed. Please verify it again.',
-          ),
-        );
-        return;
-      }
-      if (!response.isSuccess) {
-        _showError(
-          _serverMessage(
-            raw: response.message,
-            zhCN: '短信验证码校验失败，请重新输入',
-            zhTW: '短信驗證碼校驗失敗，請重新輸入',
-            en: 'The SMS code could not be verified. Please try again.',
-          ),
-        );
-        return;
-      }
-    }
-    if (_registrationChannel == 'email' && _emailRegistrationReady) {
-      if (!_isValidEmail(_emailController.text.trim()) ||
-          !RegExp(r'^\d{6}$').hasMatch(_emailCodeController.text.trim())) {
-        _showError(_registerText(
-          context,
-          zhCN: '请填写有效邮箱和6位邮箱验证码',
-          zhTW: '請填寫有效電子信箱和6位驗證碼',
-          en: 'Enter a valid email and 6-digit email code',
-        ));
-        return;
-      }
-    }
-
-    HapticFeedback.mediumImpact();
-    setState(() => _currentStep = 1);
-  }
-
-  Widget _buildPresetAvatarPicker(bool isDark) {
-    return Column(
+  Widget _buildAgreementCheckbox() {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.center,
       children: [
-        Text(
-          _registerText(
-            context,
-            zhCN: '选择一个头像',
-            zhTW: '選擇一個頭像',
-            en: 'Choose an avatar',
-          ),
-          style: TextStyle(
-            fontSize: 14,
-            fontWeight: FontWeight.w600,
-            color: isDark ? Colors.white70 : Colors.black87,
-          ),
-        ),
-        const SizedBox(height: 12),
-        Wrap(
-          alignment: WrapAlignment.center,
-          spacing: 8,
-          runSpacing: 8,
-          children: _presetAvatars.map((avatar) {
-            final isSelected = _selectedPresetAvatar == avatar;
-            return Semantics(
-              label: _registerText(
-                context,
-                zhCN: '预设头像 ${_presetAvatars.indexOf(avatar) + 1}',
-                zhTW: '預設頭像 ${_presetAvatars.indexOf(avatar) + 1}',
-                en: 'Preset avatar ${_presetAvatars.indexOf(avatar) + 1}',
-              ),
-              selected: isSelected,
-              button: true,
-              child: GestureDetector(
-                key: ValueKey('register_preset_avatar_${avatar.id}'),
-                onTap: () {
-                  if (PlatformUtils.isMobile) {
-                    HapticFeedback.selectionClick();
-                  }
-                  setState(() {
-                    _selectedPresetAvatar = avatar;
-                    _selectedGender = avatar.gender;
-                    _avatarBytes = null;
-                    _avatarPath = null;
-                  });
-                },
-                child: Stack(
-                  clipBehavior: Clip.none,
-                  children: [
-                    AnimatedContainer(
-                      duration: const Duration(milliseconds: 160),
-                      width: 52,
-                      height: 52,
-                      padding: const EdgeInsets.all(2),
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        border: Border.all(
-                          color: isSelected
-                              ? AppColors.controlActiveFor(context)
-                              : (isDark ? Colors.white24 : Colors.black12),
-                          width: isSelected ? 3 : 1,
-                        ),
-                      ),
-                      child: ClipOval(
-                        child: Image.asset(avatar.assetPath, fit: BoxFit.cover),
-                      ),
-                    ),
-                    if (isSelected)
-                      Positioned(
-                        right: -2,
-                        bottom: -2,
-                        child: Container(
-                          width: 18,
-                          height: 18,
-                          decoration: BoxDecoration(
-                            color: AppColors.controlActiveFor(context),
-                            shape: BoxShape.circle,
-                            border: Border.all(
-                              color: isDark
-                                  ? const Color(0xFF0E0E0E)
-                                  : Colors.white,
-                              width: 2,
-                            ),
-                          ),
-                          child: const Icon(
-                            Icons.check_rounded,
-                            size: 12,
-                            color: Colors.white,
-                          ),
-                        ),
-                      ),
-                  ],
-                ),
-              ),
-            );
-          }).toList(),
-        ),
-        const SizedBox(height: 8),
-        TextButton.icon(
-          onPressed: _pickAvatar,
-          icon: const Icon(Icons.photo_library_outlined, size: 18),
-          label: Text(
-            _registerText(
-              context,
-              zhCN: '从相册选择',
-              zhTW: '從相簿選擇',
-              en: 'Choose from gallery',
+        SizedBox(
+          width: 24,
+          height: 24,
+          child: Checkbox(
+            value: _agreedToTerms,
+            onChanged: (value) => setState(() {
+              _agreedToTerms = value ?? false;
+              _clearError();
+            }),
+            activeColor: AppColors.controlActiveFor(context),
+            materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(5),
             ),
           ),
         ),
-      ],
-    );
-  }
-
-  void _pickAvatar() async {
-    if (PlatformUtils.isMobile) {
-      HapticFeedback.selectionClick();
-    }
-    final picker = ImagePicker();
-    final image = await picker.pickImage(source: ImageSource.gallery);
-    if (image != null) {
-      if (kIsWeb) {
-        final bytes = await image.readAsBytes();
-        setState(() {
-          _selectedPresetAvatar = null;
-          _avatarBytes = bytes;
-          _avatarPath = image.path;
-        });
-      } else {
-        setState(() {
-          _selectedPresetAvatar = null;
-          _avatarBytes = null;
-          _avatarPath = image.path;
-        });
-      }
-    }
-  }
-
-  /// 打开协议页面
-  void _openAgreement(AgreementType type) {
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (context) => AgreementPage(type: type),
-      ),
-    );
-  }
-
-  /// 构建协议勾选框
-  Widget _buildAgreementCheckbox(bool isDark) {
-    return GestureDetector(
-      onTap: () {
-        setState(() {
-          _agreedToTerms = !_agreedToTerms;
-        });
-      },
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.center,
-        crossAxisAlignment: CrossAxisAlignment.center,
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          SizedBox(
-            width: 20,
-            height: 20,
-            child: Checkbox(
-              value: _agreedToTerms,
-              onChanged: (value) {
-                setState(() {
-                  _agreedToTerms = value ?? false;
-                });
-              },
-              activeColor: AppColors.controlActiveFor(context),
-              checkColor: AppColors.onControlActiveFor(context),
-              materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-              visualDensity: VisualDensity.compact,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(4),
-              ),
-              side: BorderSide(
-                color: AppColors.controlBorderFor(context),
-                width: 1.5,
-              ),
-            ),
-          ),
-          const SizedBox(width: 6),
-          RichText(
+        const SizedBox(width: 8),
+        Expanded(
+          child: RichText(
             text: TextSpan(
               style: TextStyle(
-                fontSize: 12,
+                fontSize: 13,
                 color: AppColors.textSecondaryFor(context),
-                height: 1.2,
               ),
               children: [
                 TextSpan(
@@ -1608,18 +725,11 @@ class _RegisterPageState extends ConsumerState<RegisterPage> {
                     en: 'I have read and agree to ',
                   ),
                 ),
-                TextSpan(
-                  text: _registerText(
-                    context,
-                    zhCN: '《用户协议》',
-                    zhTW: '《用戶協議》',
-                    en: '《User Agreement》',
-                  ),
-                  style: TextStyle(
-                    color: AppColors.linkFor(context),
-                  ),
-                  recognizer: TapGestureRecognizer()
-                    ..onTap = () => _openAgreement(AgreementType.userAgreement),
+                _agreementSpan(
+                  type: AgreementType.userAgreement,
+                  zhCN: '《用户协议》',
+                  zhTW: '《用戶協議》',
+                  en: 'User Agreement',
                 ),
                 TextSpan(
                   text: _registerText(
@@ -1629,224 +739,178 @@ class _RegisterPageState extends ConsumerState<RegisterPage> {
                     en: ' and ',
                   ),
                 ),
-                TextSpan(
-                  text: _registerText(
-                    context,
-                    zhCN: '《隐私政策》',
-                    zhTW: '《隱私政策》',
-                    en: '《Privacy Policy》',
-                  ),
-                  style: TextStyle(
-                    color: AppColors.linkFor(context),
-                  ),
-                  recognizer: TapGestureRecognizer()
-                    ..onTap = () => _openAgreement(AgreementType.privacyPolicy),
+                _agreementSpan(
+                  type: AgreementType.privacyPolicy,
+                  zhCN: '《隐私政策》',
+                  zhTW: '《隱私政策》',
+                  en: 'Privacy Policy',
                 ),
               ],
             ),
           ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 
-  void _register() async {
-    // 检查是否同意协议
-    if (!_agreedToTerms) {
-      _showError(
-        _registerText(
-          context,
-          zhCN: '请先阅读并同意用户协议和隐私政策',
-          zhTW: '請先閱讀並同意用戶協議和隱私政策',
-          en: 'Please read and agree to the User Agreement and Privacy Policy',
-        ),
-      );
-      return;
-    }
+  TextSpan _agreementSpan({
+    required AgreementType type,
+    required String zhCN,
+    required String zhTW,
+    required String en,
+  }) {
+    return TextSpan(
+      text: _registerText(context, zhCN: zhCN, zhTW: zhTW, en: en),
+      style: TextStyle(color: AppColors.linkFor(context)),
+      recognizer: TapGestureRecognizer()
+        ..onTap = () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => AgreementPage(type: type)),
+            ),
+    );
+  }
 
-    final registrationPhone = _usernameController.text.trim();
-    if (!isValidMainlandChinaMobile(registrationPhone)) {
-      _showError(_registerText(
+  Future<void> _register() async {
+    if (_isLoading) return;
+    final phone = _phoneController.text.trim();
+    final password = _passwordController.text;
+    final nickname = _nicknameController.text.trim();
+    final inviteCode = _inviteCodeController.text.trim();
+
+    if (!isValidMainlandChinaMobile(phone)) {
+      return _showError(_registerText(
         context,
         zhCN: '请输入正确的11位手机号',
         zhTW: '請輸入正確的11位手機號碼',
         en: 'Enter a valid 11-digit mobile number',
       ));
-      return;
     }
-
-    if (_smsRegistrationRequired) {
-      final phone = _usernameController.text.trim();
-      final code = _smsCodeController.text.trim();
-      if (!isValidMainlandChinaMobile(phone) ||
-          !RegExp(r'^\d{6}$').hasMatch(code)) {
-        _showError(_registerText(
-          context,
-          zhCN: '请填写有效手机号和6位短信验证码',
-          zhTW: '請填寫有效手機號碼和6位短信驗證碼',
-          en: 'Enter a valid phone number and 6-digit SMS code',
-        ));
-        return;
-      }
+    if (_isCheckingUsername) {
+      return _showError(_registerText(
+        context,
+        zhCN: '正在检查手机号，请稍候',
+        zhTW: '正在檢查手機號碼，請稍候',
+        en: 'Checking the mobile number. Please wait.',
+      ));
     }
-    if (_registrationChannel == 'email' && _emailRegistrationReady) {
-      final email = _emailController.text.trim();
-      final code = _emailCodeController.text.trim();
-      if (!_isValidEmail(email) || !RegExp(r'^\d{6}$').hasMatch(code)) {
-        _showError(_registerText(
-          context,
-          zhCN: '请填写有效邮箱和6位邮箱验证码',
-          zhTW: '請填寫有效電子信箱和6位驗證碼',
-          en: 'Enter a valid email and 6-digit email code',
-        ));
-        return;
-      }
-    }
-
-    if (_nicknameController.text.trim().isEmpty) {
-      _showError(
-        _registerText(
-          context,
-          zhCN: '请输入昵称',
-          zhTW: '請輸入暱稱',
-          en: 'Please enter a nickname',
-        ),
+    if (_isUsernameAvailable == false) {
+      return _showError(
+        _usernameMessage ??
+            _registerText(
+              context,
+              zhCN: '该手机号已注册',
+              zhTW: '該手機號碼已註冊',
+              en: 'This mobile number is already registered',
+            ),
       );
-      return;
     }
-
-    if (_inviteCodeController.text.trim().isEmpty) {
-      _showError(
-        _registerText(
-          context,
-          zhCN: '当前注册必须填写邀请码',
-          zhTW: '目前註冊必須填寫邀請碼',
-          en: 'An invite code is required for registration',
-        ),
-      );
-      return;
+    if (password.length < 6 || password.length > 20) {
+      return _showError(_registerText(
+        context,
+        zhCN: '密码长度必须为6至20位',
+        zhTW: '密碼長度必須為6至20位',
+        en: 'Password must be 6 to 20 characters',
+      ));
+    }
+    if (_confirmPasswordController.text != password) {
+      return _showError(_registerText(
+        context,
+        zhCN: '两次输入的密码不一致',
+        zhTW: '兩次輸入的密碼不一致',
+        en: 'The two passwords do not match',
+      ));
+    }
+    if (nickname.isEmpty) {
+      return _showError(_registerText(
+        context,
+        zhCN: '请输入姓名',
+        zhTW: '請輸入姓名',
+        en: 'Enter your name',
+      ));
+    }
+    if (inviteCode.isEmpty) {
+      return _showError(_registerText(
+        context,
+        zhCN: '请输入邀请码',
+        zhTW: '請輸入邀請碼',
+        en: 'Enter an invitation code',
+      ));
+    }
+    if (!_agreedToTerms) {
+      return _showError(_registerText(
+        context,
+        zhCN: '请先阅读并同意用户协议和隐私政策',
+        zhTW: '請先閱讀並同意用戶協議和隱私政策',
+        en: 'Please agree to the User Agreement and Privacy Policy',
+      ));
+    }
+    final smsCode = _smsCodeController.text.trim();
+    if (_showSmsCode && !RegExp(r'^\d{6}$').hasMatch(smsCode)) {
+      return _showError(_registerText(
+        context,
+        zhCN: '请填写6位短信验证码',
+        zhTW: '請填寫6位短信驗證碼',
+        en: 'Enter the 6-digit SMS verification code',
+      ));
     }
 
     HapticFeedback.mediumImpact();
-    setState(() => _isLoading = true);
+    setState(() {
+      _isLoading = true;
+      _errorMessage = null;
+    });
 
-    // 获取持久化设备信息
-    final deviceType = DeviceService.getDeviceType();
-    final deviceResults = await Future.wait<String>([
-      DeviceService.getDeviceId(),
-      DeviceService.getDeviceName(),
-    ]);
-    final deviceId = deviceResults[0];
-    final deviceName = deviceResults[1];
-
-    if (!mounted) return;
-
-    // 注册会立即触发全局路由跳转，先保存服务引用，避免上传完成后页面已销毁。
-    final uploadService = ref.read(uploadServiceProvider);
-    final api = ref.read(apiClientProvider);
-
-    // 调用后端 API 注册
-    final authService = ref.read(authServiceProvider.notifier);
-    final response = await authService.register(
-      username: _usernameController.text.trim(),
-      password: _passwordController.text,
-      nickname: _nicknameController.text.trim(),
-      gender: _selectedGender,
-      deviceId: deviceId,
-      deviceType: deviceType,
-      deviceName: deviceName,
-      referralCode: _inviteCodeController.text.trim().isNotEmpty
-          ? _inviteCodeController.text.trim()
-          : null,
-      phone: registrationPhone,
-      smsCode: _smsRegistrationRequired ? _smsCodeController.text.trim() : null,
-      email: null,
-      emailCode: null,
-    );
-
-    if (response.isSuccess) {
-      Future<void> saveAvatarUrl(String? avatarUrl) async {
-        if (avatarUrl == null || avatarUrl.trim().isEmpty) {
-          throw StateError('Avatar upload returned an empty URL');
-        }
-        final updateResponse =
-            await api.put('/user/me', data: {'avatar': avatarUrl});
-        if (!updateResponse.isSuccess) {
-          throw StateError(
-            'Avatar profile update failed: ${updateResponse.message}',
-          );
-        }
-        await authService.getCurrentUser();
-      }
-
-      // 注册成功后，如果有头像则上传
-      if (_avatarBytes != null) {
-        try {
-          final avatarUrl = await uploadService.uploadImageData(
-            _avatarBytes!,
-            'avatar.jpg',
-          );
-          await saveAvatarUrl(avatarUrl);
-        } catch (e) {
-          debugPrint('[Register] Avatar upload failed: $e');
-        }
-      } else if (_avatarPath != null) {
-        try {
-          final avatarUrl =
-              await uploadService.uploadAvatar(XFile(_avatarPath!));
-          await saveAvatarUrl(avatarUrl);
-        } catch (e) {
-          debugPrint('[Register] Avatar upload failed: $e');
-          // 头像上传失败不阻塞注册流程
-        }
-      } else if (_selectedPresetAvatar != null) {
-        try {
-          final avatarData =
-              await rootBundle.load(_selectedPresetAvatar!.assetPath);
-          final avatarBytes = avatarData.buffer.asUint8List(
-            avatarData.offsetInBytes,
-            avatarData.lengthInBytes,
-          );
-          final avatarUrl = await uploadService.uploadImageData(
-            avatarBytes,
-            'avatar_${_selectedPresetAvatar!.id}.png',
-          );
-          await saveAvatarUrl(avatarUrl);
-        } catch (e) {
-          debugPrint('[Register] Preset avatar upload failed: $e');
-          // 预设头像上传失败不阻塞注册流程
-        }
-      }
-
-      // AuthService publishes authenticated only after persisting the complete
-      // session. GoRouter owns the single post-registration transition. A
-      // second context.go here can race that redirect and render a blank first
-      // frame on iOS.
-      if (mounted) {
-        setState(() => _isLoading = false);
-      }
-    } else {
+    try {
+      final deviceResults = await Future.wait<String>([
+        DeviceService.getDeviceId(),
+        DeviceService.getDeviceName(),
+      ]);
       if (!mounted) return;
-      setState(() => _isLoading = false);
-      _showError(
-        _serverMessage(
-          raw: response.message,
+
+      final response = await ref.read(authServiceProvider.notifier).register(
+            username: phone,
+            password: password,
+            nickname: nickname,
+            deviceId: deviceResults[0],
+            deviceType: DeviceService.getDeviceType(),
+            deviceName: deviceResults[1],
+            referralCode: inviteCode,
+            phone: phone,
+            smsCode: _showSmsCode ? smsCode : null,
+          );
+      if (!mounted) return;
+      if (!response.isSuccess) {
+        setState(() {
+          _isLoading = false;
+          _errorMessage = localizeServerMessage(
+            response.message,
+            fallbackZhCN: '注册失败，请稍后重试',
+            fallbackZhTW: '註冊失敗，請稍後重試',
+            fallbackEn: 'Registration failed. Please try again later.',
+          );
+        });
+      }
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _isLoading = false;
+        _errorMessage = _registerText(
+          context,
           zhCN: '注册失败，请稍后重试',
           zhTW: '註冊失敗，請稍後重試',
           en: 'Registration failed. Please try again later.',
-        ),
-      );
+        );
+      });
     }
   }
 
   void _clearError() {
-    if (_errorMessage != null) {
+    if (_errorMessage != null && mounted) {
       setState(() => _errorMessage = null);
     }
   }
 
   void _showError(String message) {
+    if (!mounted) return;
     setState(() => _errorMessage = message);
-    HapticFeedback.heavyImpact();
   }
 }

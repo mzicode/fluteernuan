@@ -2375,33 +2375,41 @@ class _MomentCard extends StatelessWidget {
               padding: const EdgeInsets.fromLTRB(6, 10, 6, 8),
               child: Row(
                 children: [
-                  _ActionButton(
-                    icon:
-                        moment.isLiked ? Icons.favorite : Icons.favorite_border,
-                    label: moment.likeCount > 0
-                        ? _formatCount(moment.likeCount)
-                        : null,
-                    isActive: moment.isLiked,
-                    isDark: isDark,
-                    onTap: onLike,
+                  Flexible(
+                    child: _ActionButton(
+                      icon: moment.isLiked
+                          ? Icons.favorite
+                          : Icons.favorite_border,
+                      label: moment.likeCount > 0
+                          ? _formatCount(moment.likeCount)
+                          : null,
+                      isActive: moment.isLiked,
+                      isDark: isDark,
+                      onTap: onLike,
+                    ),
                   ),
-                  _ActionButton(
-                    icon: Icons.chat_bubble_outline,
-                    label: moment.commentCount > 0
-                        ? _formatCount(moment.commentCount)
-                        : null,
-                    isDark: isDark,
-                    onTap: () => _openMomentDetail(context, showComments: true),
+                  Flexible(
+                    child: _ActionButton(
+                      icon: Icons.chat_bubble_outline,
+                      label: moment.commentCount > 0
+                          ? _formatCount(moment.commentCount)
+                          : null,
+                      isDark: isDark,
+                      onTap: () =>
+                          _openMomentDetail(context, showComments: true),
+                    ),
                   ),
-                  _ActionButton(
-                    icon: Icons.share_outlined,
-                    label: moment.shareCount > 0
-                        ? _formatCount(moment.shareCount)
-                        : null,
-                    isDark: isDark,
-                    onTap: () {
-                      _shareMoment(context, moment);
-                    },
+                  Flexible(
+                    child: _ActionButton(
+                      icon: Icons.share_outlined,
+                      label: moment.shareCount > 0
+                          ? _formatCount(moment.shareCount)
+                          : null,
+                      isDark: isDark,
+                      onTap: () {
+                        _shareMoment(context, moment);
+                      },
+                    ),
                   ),
                 ],
               ),
@@ -3512,12 +3520,13 @@ class _MomentDetailPageState extends ConsumerState<MomentDetailPage> {
 
               return Row(
                 children: [
-                  GestureDetector(
-                    onTap: _isLiking
-                        ? null
-                        : () async {
-                            if (_isLiking) return;
-                            HapticFeedback.selectionClick();
+                  Flexible(
+                    child: GestureDetector(
+                      onTap: _isLiking
+                          ? null
+                          : () async {
+                              if (_isLiking) return;
+                              HapticFeedback.selectionClick();
 
                             final wasLiked = isLiked;
                             setState(() => _isLiking = true);
@@ -3585,32 +3594,37 @@ class _MomentDetailPageState extends ConsumerState<MomentDetailPage> {
                       isActive: isLiked,
                     ),
                   ),
+                  ),
                   const SizedBox(width: 24),
-                  _buildStatItem(
-                    Icons.chat_bubble_outline,
-                    commentCount,
-                    _momentsText(
-                      context,
-                      zhCN: '评论',
-                      zhTW: '評論',
-                      en: 'Comments',
+                  Flexible(
+                    child: _buildStatItem(
+                      Icons.chat_bubble_outline,
+                      commentCount,
+                      _momentsText(
+                        context,
+                        zhCN: '评论',
+                        zhTW: '評論',
+                        en: 'Comments',
+                      ),
                     ),
                   ),
                   const SizedBox(width: 24),
-                  GestureDetector(
-                    behavior: HitTestBehavior.opaque,
-                    onTap: () {
-                      HapticFeedback.mediumImpact();
-                      _shareMoment(context, widget.moment);
-                    },
-                    child: _buildStatItem(
-                      Icons.share_outlined,
-                      shareCount,
-                      _momentsText(
-                        context,
-                        zhCN: '分享',
-                        zhTW: '分享',
-                        en: 'Shares',
+                  Flexible(
+                    child: GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTap: () {
+                        HapticFeedback.mediumImpact();
+                        _shareMoment(context, widget.moment);
+                      },
+                      child: _buildStatItem(
+                        Icons.share_outlined,
+                        shareCount,
+                        _momentsText(
+                          context,
+                          zhCN: '分享',
+                          zhTW: '分享',
+                          en: 'Shares',
+                        ),
                       ),
                     ),
                   ),
@@ -3719,12 +3733,17 @@ class _MomentDetailPageState extends ConsumerState<MomentDetailPage> {
     final color =
         isActive ? AppColors.error : AppColors.textSecondaryFor(context);
     return Row(
+      mainAxisSize: MainAxisSize.min,
       children: [
         Icon(icon, size: 18, color: color),
         const SizedBox(width: 4),
-        Text(
-          count > 0 ? '$count' : label,
-          style: TextStyle(fontSize: 13, color: color),
+        Flexible(
+          child: Text(
+            count > 0 ? '$count' : label,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(fontSize: 13, color: color),
+          ),
         ),
       ],
     );
@@ -4273,20 +4292,26 @@ class _CommentTile extends StatelessWidget {
               children: [
                 Row(
                   children: [
-                    GestureDetector(
-                      onTap: onUserTap,
-                      child: Text(
-                        comment.userName,
-                        style: TextStyle(
-                          fontSize: 14,
-                          fontWeight: FontWeight.w600,
-                          color: AppColors.textPrimaryFor(context),
+                    Flexible(
+                      child: GestureDetector(
+                        onTap: onUserTap,
+                        child: Text(
+                          comment.userName,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w600,
+                            color: AppColors.textPrimaryFor(context),
+                          ),
                         ),
                       ),
                     ),
                     const SizedBox(width: 8),
                     Text(
                       comment.timeAgo,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                       style: TextStyle(
                         fontSize: 12,
                         color: AppColors.textTertiaryFor(context),
@@ -4390,11 +4415,19 @@ class _ActionButton extends StatelessWidget {
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
         child: Row(
+          mainAxisSize: MainAxisSize.min,
           children: [
             Icon(icon, size: 20, color: color),
             if (label != null) ...[
               const SizedBox(width: 4),
-              Text(label!, style: TextStyle(fontSize: 13, color: color)),
+              Flexible(
+                child: Text(
+                  label!,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(fontSize: 13, color: color),
+                ),
+              ),
             ],
           ],
         ),

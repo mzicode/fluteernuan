@@ -76,11 +76,7 @@ class _ChannelInfoSheet extends ConsumerWidget {
                             : AppColors.lightBackground,
                         shape: BoxShape.circle,
                       ),
-                      child: Icon(
-                        Icons.verified,
-                        size: 24,
-                        color: AppColors.primaryFor(context),
-                      ),
+                      child: const OfficialBadgeStatic(size: 24),
                     ),
                   ),
                 ],

@@ -1103,24 +1103,60 @@ class _CallPageState extends ConsumerState<CallPage>
     final hasLocalVideo = callService.hasLocalVideoView;
     final localPrimary =
         !hasRemoteUser || _videoLayoutMode == _VideoLayoutMode.localPrimary;
+    final isNertc = callInfo.rtcProvider == 'nertc';
 
     final localSurface = Stack(
       fit: StackFit.expand,
       children: [
         const ColoredBox(color: Colors.black),
         if (callState.isVideoEnabled && hasLocalVideo)
-          callService.getLocalView()
+          // Keep the same view instance across timer rebuilds (NERTC canvas).
+          KeyedSubtree(
+            key: const ValueKey('call_local_rtc_surface'),
+            child: callService.getLocalView(),
+          )
         else
           _buildLocalVideoPlaceholder(callState),
       ],
     );
-    final remoteSurface = hasRemoteUser && remoteVideoEnabled
-        ? callService.getRemoteView()
-        : _buildRemoteVideoPlaceholder(
-            callInfo,
-            hasRemoteUser,
-            remoteVideoEnabled,
-          );
+    // NERTC: mount remote canvas as soon as remoteUid is known so subscribe
+    // has a canvas; overlay placeholder until first remote video frame.
+    // Agora/LiveKit: keep previous gate (wait for remoteVideoEnabled).
+    final Widget remoteSurface;
+    if (!hasRemoteUser) {
+      remoteSurface = _buildRemoteVideoPlaceholder(
+        callInfo,
+        hasRemoteUser,
+        remoteVideoEnabled,
+      );
+    } else if (isNertc) {
+      remoteSurface = Stack(
+        fit: StackFit.expand,
+        children: [
+          KeyedSubtree(
+            key: ValueKey('call_remote_rtc_surface_${callInfo.remoteUid}'),
+            child: callService.getRemoteView(),
+          ),
+          if (!remoteVideoEnabled)
+            _buildRemoteVideoPlaceholder(
+              callInfo,
+              hasRemoteUser,
+              remoteVideoEnabled,
+            ),
+        ],
+      );
+    } else if (remoteVideoEnabled) {
+      remoteSurface = KeyedSubtree(
+        key: ValueKey('call_remote_rtc_surface_${callInfo.remoteUid}'),
+        child: callService.getRemoteView(),
+      );
+    } else {
+      remoteSurface = _buildRemoteVideoPlaceholder(
+        callInfo,
+        hasRemoteUser,
+        remoteVideoEnabled,
+      );
+    }
 
     final localLayer = _buildAnimatedVideoLayer(
       layerKey: const ValueKey('call_page_local_video_layer'),

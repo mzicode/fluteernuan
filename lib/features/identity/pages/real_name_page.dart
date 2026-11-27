@@ -148,9 +148,9 @@ class _RealNamePageState extends ConsumerState<RealNamePage> {
     final idNumber = _idNumberController.text.trim().toUpperCase();
     if (_frontFile == null || _backFile == null) {
       setState(() => _error = _text(
-          zhCN: '请上传两张认证图片',
-          zhTW: '請上傳兩張認證圖片',
-          en: 'Upload two verification images'));
+          zhCN: '请上传身份证正面和反面照片',
+          zhTW: '請上傳身分證正面和反面照片',
+          en: 'Upload photos of the front and back of your ID card'));
       return;
     }
 
@@ -168,9 +168,9 @@ class _RealNamePageState extends ConsumerState<RealNamePage> {
       );
       if (frontUrl == null || frontUrl.trim().isEmpty) {
         throw StateError(_text(
-            zhCN: '认证图片 1 上传失败',
-            zhTW: '認證圖片 1 上傳失敗',
-            en: 'Failed to upload verification image 1'));
+            zhCN: '身份证正面上传失败',
+            zhTW: '身分證正面上傳失敗',
+            en: 'Failed to upload the front of your ID card'));
       }
       final backUrl = await uploader.uploadImage(
         _backFile!,
@@ -178,9 +178,9 @@ class _RealNamePageState extends ConsumerState<RealNamePage> {
       );
       if (backUrl == null || backUrl.trim().isEmpty) {
         throw StateError(_text(
-            zhCN: '认证图片 2 上传失败',
-            zhTW: '認證圖片 2 上傳失敗',
-            en: 'Failed to upload verification image 2'));
+            zhCN: '身份证反面上传失败',
+            zhTW: '身分證反面上傳失敗',
+            en: 'Failed to upload the back of your ID card'));
       }
 
       final response = await ref.read(realNameServiceProvider).submit(
@@ -415,8 +415,6 @@ class _RealNamePageState extends ConsumerState<RealNamePage> {
             controller: _idNumberController,
             enabled: !_submitting,
             keyboardType: TextInputType.text,
-            textCapitalization: TextCapitalization.characters,
-            inputFormatters: [LengthLimitingTextInputFormatter(64)],
             decoration: InputDecoration(
               labelText: _text(zhCN: '身份证号', zhTW: '身份證號', en: 'ID Number'),
               hintText: _text(
@@ -425,37 +423,37 @@ class _RealNamePageState extends ConsumerState<RealNamePage> {
             ),
           ),
           const SizedBox(height: 22),
-          Text(_text(zhCN: '认证图片', zhTW: '認證圖片', en: 'Verification Images'),
+          Text(_text(zhCN: '身份证照片', zhTW: '身分證照片', en: 'ID Card Photos'),
               style:
                   const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
           const SizedBox(height: 6),
           Text(
             _text(
-              zhCN: '请上传两张清晰图片，具体内容由后端审核',
-              zhTW: '請上傳兩張清晰圖片，具體內容由後端審核',
-              en: 'Upload two clear images. The backend will review their content.',
+              zhCN: '请上传清晰的身份证正面和反面照片',
+              zhTW: '請上傳清晰的身分證正面和反面照片',
+              en: 'Upload clear photos of the front and back of your ID card.',
             ),
             style: TextStyle(
                 fontSize: 12.5, color: AppColors.textSecondaryFor(context)),
           ),
           const SizedBox(height: 14),
           _DocumentPhotoCard(
-            title: _text(
-                zhCN: '认证图片 1', zhTW: '認證圖片 1', en: 'Verification Image 1'),
+            title: _text(zhCN: '身份证正面', zhTW: '身分證正面', en: 'ID Card Front'),
             subtitle: _text(
-                zhCN: '上传第一张图片', zhTW: '上傳第一張圖片', en: 'Upload the first image'),
+                zhCN: '上传身份证正面照片',
+                zhTW: '上傳身分證正面照片',
+                en: 'Upload the front of your ID card'),
             bytes: _frontBytes,
             enabled: !_submitting,
             onTap: () => _pickDocument(true),
           ),
           const SizedBox(height: 12),
           _DocumentPhotoCard(
-            title: _text(
-                zhCN: '认证图片 2', zhTW: '認證圖片 2', en: 'Verification Image 2'),
+            title: _text(zhCN: '身份证反面', zhTW: '身分證反面', en: 'ID Card Back'),
             subtitle: _text(
-                zhCN: '上传第二张图片',
-                zhTW: '上傳第二張圖片',
-                en: 'Upload the second image'),
+                zhCN: '上传身份证反面照片',
+                zhTW: '上傳身分證反面照片',
+                en: 'Upload the back of your ID card'),
             bytes: _backBytes,
             enabled: !_submitting,
             onTap: () => _pickDocument(false),

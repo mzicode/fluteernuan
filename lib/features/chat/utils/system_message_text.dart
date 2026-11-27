@@ -26,36 +26,6 @@ String _systemOtherParty() => _systemMessageText(
       en: 'Other party',
     );
 
-/// Returns whether a system message describes a group member entering or
-/// leaving the group. Meeting attendance events are intentionally excluded.
-bool isGroupMembershipSystemMessage(String rawText) {
-  final text = rawText.trim();
-  if (text.isEmpty) return false;
-
-  try {
-    final decoded = jsonDecode(text);
-    if (decoded is Map) {
-      final type = decoded['type']?.toString().toLowerCase() ?? '';
-      if (type.contains('meeting')) return false;
-      if ((type.contains('member') || type.contains('user')) &&
-          (type.contains('join') ||
-              type.contains('enter') ||
-              type.contains('leave') ||
-              type.contains('exit') ||
-              type.contains('removed') ||
-              type.contains('kicked'))) {
-        return true;
-      }
-    }
-  } catch (_) {
-    // Legacy servers may send plain text instead of JSON.
-  }
-
-  return RegExp(
-    r'(加入了群组|进入了群组|加入群组|进入群组|退出了群组|离开了群组|退出群组|离开群组)$',
-  ).hasMatch(text);
-}
-
 String _meetingTypeLabel(bool isVoice) => isVoice
     ? _systemMessageText(
         zhCN: '语音群会议',
@@ -67,6 +37,81 @@ String _meetingTypeLabel(bool isVoice) => isVoice
         zhTW: '視訊群會議',
         en: 'video group meeting',
       );
+
+String? encodedSystemEventType(String rawText) {
+  final text = rawText.trim();
+  if (text.isEmpty || !text.startsWith('{') || !text.endsWith('}')) {
+    return null;
+  }
+  try {
+    final decoded = jsonDecode(text);
+    if (decoded is! Map) return null;
+    final type = (decoded['type'] ?? decoded['event'] ?? decoded['action'])
+            ?.toString()
+            .trim()
+            .toLowerCase() ??
+        '';
+    return type.isEmpty ? null : type;
+  } catch (_) {
+    return null;
+  }
+}
+
+bool _looksLikeMemberMutePlainText(String text) {
+  final value = text.trim();
+  if (value.isEmpty) return false;
+  // 「张三已被暖邻官方客服禁言10分钟」/「张三 已被 管理员 禁言 10分钟」
+  if (RegExp(r'已被\s*.+?\s*解除禁言').hasMatch(value)) return true;
+  if (RegExp(r'已被\s*.+?\s*禁言').hasMatch(value)) return true;
+  // 无操作者的简写：「张三已被禁言」「张三已解除禁言」
+  if (RegExp(r'已被禁言').hasMatch(value)) return true;
+  if (RegExp(r'已解除禁言').hasMatch(value)) return true;
+  if (RegExp(r'was\s+unmuted\s+by', caseSensitive: false).hasMatch(value)) {
+    return true;
+  }
+  if (RegExp(r'was\s+muted\s+by', caseSensitive: false).hasMatch(value)) {
+    return true;
+  }
+  return false;
+}
+
+bool _isMuteSystemEventType(String? type) {
+  if (type == null || type.isEmpty) return false;
+  final normalized = type.replaceAll(RegExp(r'[\s_-]+'), '');
+  if (normalized.contains('unmute')) return true;
+  if (normalized.contains('membermute')) return true;
+  if (normalized.contains('usermute')) return true;
+  if (normalized == 'mute' || normalized == 'muted') return true;
+  if (normalized.contains('muted') && !normalized.contains('channel')) {
+    return true;
+  }
+  return false;
+}
+
+/// 群成员禁言/解禁系统提示（含「xxx已被暖邻官方客服禁言」），聊天内与会话预览均不展示。
+bool isMemberMuteSystemMessage(String rawText) {
+  final text = rawText.trim();
+  if (text.isEmpty) return false;
+
+  final type = encodedSystemEventType(text);
+  if (_isMuteSystemEventType(type)) return true;
+
+  if (text.startsWith('{') && text.endsWith('}')) {
+    try {
+      final decoded = jsonDecode(text);
+      if (decoded is Map) {
+        final nested = (decoded['text'] ??
+                decoded['content'] ??
+                decoded['message'] ??
+                '')
+            .toString();
+        if (_looksLikeMemberMutePlainText(nested)) return true;
+      }
+    } catch (_) {}
+  }
+
+  return _looksLikeMemberMutePlainText(text);
+}
 
 // 流程逻辑：`resolveSystemMessageText` 集中处理输入规范化、空值和兼容字段，输出稳定的数据结构，避免调用方重复实现边界判断。
 String resolveSystemMessageText(String rawText, {String? currentUserId}) {
@@ -80,7 +125,7 @@ String resolveSystemMessageText(String rawText, {String? currentUserId}) {
 
   try {
     final data = jsonDecode(rawText) as Map<String, dynamic>;
-    final type = data['type'] as String?;
+    final type = (data['type'] ?? data['event'] ?? data['action'])?.toString();
 
     final normalizedType = type?.toLowerCase() ?? '';
     final isMeetingMembership = normalizedType.contains('meeting');
@@ -88,6 +133,7 @@ String resolveSystemMessageText(String rawText, {String? currentUserId}) {
         normalizedType.contains('enter') ||
         normalizedType.contains('added');
     final isLeftEvent = normalizedType.contains('leave') ||
+        normalizedType.contains('left') ||
         normalizedType.contains('exit') ||
         normalizedType.contains('removed') ||
         normalizedType.contains('kicked');
@@ -263,6 +309,22 @@ String resolveSystemMessageText(String rawText, {String? currentUserId}) {
         en: '$operatorName updated the group meeting title',
       );
     }
+
+    final nestedText = (data['text'] ?? data['content'] ?? data['message'])
+        ?.toString()
+        .trim();
+    if (nestedText != null &&
+        nestedText.isNotEmpty &&
+        !nestedText.startsWith('{')) {
+      return _resolvePlainSystemMessageText(nestedText);
+    }
+    if (type != null && type.trim().isNotEmpty) {
+      return _systemMessageText(
+        zhCN: '[系统消息]',
+        zhTW: '[系統訊息]',
+        en: '[System message]',
+      );
+    }
   } catch (_) {
     // Ignore and try plain-text server system messages below.
   }
@@ -287,46 +349,6 @@ String resolveServerPreviewText(String rawText, {String? currentUserId}) {
   }
 
   return _resolvePlainSystemMessageText(value);
-}
-
-bool looksLikeServerSystemPreviewText(String rawText) {
-  final text = rawText.trim();
-  if (text.isEmpty) {
-    return false;
-  }
-  if (_serverSystemEventText(text) != null) {
-    return true;
-  }
-  if (_legacyEnglishMeetingEventText(text) != null) {
-    return true;
-  }
-  if (text.startsWith('{') && text.endsWith('}')) {
-    return true;
-  }
-  if (<String>{
-    '你撤回了一条消息',
-    '有人撤回了一条消息',
-    '消息已撤回',
-    '红包已过期',
-    '转账已过期',
-    '已拒收',
-    '已退款',
-  }.contains(text)) {
-    return true;
-  }
-
-  return RegExp(r'^.+?\s*领取了红包$').hasMatch(text) ||
-      RegExp(r'^.+?\s*已收款$').hasMatch(text) ||
-      RegExp(r'^.+?刚刚把.+?添加到通讯录，现在可以开始聊天了$').hasMatch(text) ||
-      RegExp(r'^.+?\s*创建了(群聊|频道)$').hasMatch(text) ||
-      RegExp(r'^.+?\s+邀请\s+.+?\s+加入了群组$').hasMatch(text) ||
-      RegExp(r'^.+?\s+邀请\s+\d+\s+位成员加入了群组$').hasMatch(text) ||
-      RegExp(r'^.+?\s+已被\s+.+?\s+禁言\s+.+$').hasMatch(text) ||
-      RegExp(r'^.+?\s+已被\s+.+?\s+解除禁言$').hasMatch(text) ||
-      RegExp(r'^.+?发起了(语音群会议|视频群会议)(：.+)?$').hasMatch(text) ||
-      RegExp(r'^.+?\s*邀请[您你]加入(语音群会议|视频群会议)(：.+)?$').hasMatch(text) ||
-      RegExp(r'^(语音群会议|视频群会议)已结束([：:].+|（.+）)?$').hasMatch(text) ||
-      RegExp(r'^.+?\s*更新了群会议名称(：.+)?$').hasMatch(text);
 }
 
 String _resolvePlainSystemMessageText(String rawText) {
@@ -576,6 +598,14 @@ String _resolvePlainSystemMessageText(String rawText) {
             zhTW: '$operator 更新了群會議名稱',
             en: '$operator updated the group meeting title',
           );
+  }
+
+  if (text.startsWith('{') && text.endsWith('}')) {
+    return _systemMessageText(
+      zhCN: '[系统消息]',
+      zhTW: '[系統訊息]',
+      en: '[System message]',
+    );
   }
 
   return text;

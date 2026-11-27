@@ -2408,17 +2408,19 @@ class _SplashPageState extends ConsumerState<SplashPage>
       return _buildForceUpdateView(isDark: isDark, appName: appName);
     }
 
+    const splashBackground = Color(0xFFF8F4F0);
     return Scaffold(
-      backgroundColor: isDark ? const Color(0xFF000000) : Colors.white,
+      backgroundColor: splashBackground,
       body: Stack(
         children: [
-          if (RuntimeFlags.disableSplashImage)
-            const SizedBox.shrink()
-          else if (!hasCustomSplash)
+          if (!RuntimeFlags.disableSplashImage)
             Positioned.fill(
-              child: _buildBundledSplashImage(),
-            )
-          else
+              child: ColoredBox(
+                color: splashBackground,
+                child: _buildBundledSplashImage(),
+              ),
+            ),
+          if (hasCustomSplash)
             Center(
               child: AnimatedBuilder(
                 animation: _controller,

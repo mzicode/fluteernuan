@@ -799,6 +799,22 @@ class _AndroidBackgroundProtectionPage extends StatelessWidget {
               _TapTile(
                 title: _notificationText(
                   context,
+                  zhCN: '来电后台弹窗与锁屏权限',
+                  zhTW: '來電背景彈窗與鎖屏權限',
+                  en: 'Background call and lock-screen permissions',
+                ),
+                subtitle: _notificationText(
+                  context,
+                  zhCN: '在系统应用权限中手动设为始终允许',
+                  zhTW: '在系統應用權限中手動設為一律允許',
+                  en: 'Check app permissions in system settings',
+                ),
+                isDark: isDark,
+                onTap: AndroidNotificationSettingsService.openVendorCallPermissionSettings,
+              ),
+              _TapTile(
+                title: _notificationText(
+                  context,
                   zhCN: '电池设置',
                   zhTW: '電池設定',
                   en: 'Battery Settings',
@@ -899,12 +915,16 @@ class _AndroidBackgroundProtectionPage extends StatelessWidget {
         ),
       ];
     }
-    if (vendor.contains('xiaomi') || vendor.contains('redmi')) {
+    if (vendor.contains('xiaomi') || vendor.contains('redmi') || vendor.contains('poco')) {
       return [
         ...common,
         _GuideStepData(
           title: '小米/Redmi：开启自启动',
           body: '进入手机管家或安全中心，允许应用自启动，并在省电策略中选择无限制。',
+        ),
+        _GuideStepData(
+          title: '小米/Redmi：允许锁屏显示和后台弹出界面',
+          body: '在权限管理中将后台弹出界面设为始终允许，并允许锁屏显示，否则来电可能只响铃、不弹出接听页。',
         ),
         _GuideStepData(
           title: '小米/Redmi：锁定最近任务',

@@ -154,6 +154,15 @@ void main() {
     expect(shouldHideChatListRevocationPreview('消息已撤回'), isTrue);
     expect(shouldHideChatListRevocationPreview('普通消息'), isFalse);
     expect(shouldHideChatListRevocationPreview(null), isFalse);
+    expect(
+      shouldHideChatListMutePreview('张三已被暖邻官方客服禁言10分钟'),
+      isTrue,
+    );
+    expect(
+      shouldHideChatListMutePreview('张三 已被 暖邻官方客服 解除禁言'),
+      isTrue,
+    );
+    expect(shouldHideChatListMutePreview('普通消息'), isFalse);
   });
 
   test('chat preview fields can be explicitly cleared after history removal',

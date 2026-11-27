@@ -149,56 +149,71 @@ extension _ChatDetailRealtimeState on _ChatDetailPageState {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     showModalBottomSheet(
       context: context,
+      isScrollControlled: true,
       backgroundColor: isDark ? const Color(0xFF1C1C1E) : Colors.white,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
       ),
-      builder: (ctx) => Padding(
-        padding: const EdgeInsets.fromLTRB(20, 20, 20, 32),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                const Icon(
-                  Icons.push_pin_rounded,
-                  size: 20,
-                  color: Color(0xFF2481CC),
-                ),
-                const SizedBox(width: 8),
-                Text(
-                  widget.chatType == ChatType.channel
-                      ? _localizedText(
-                          zhCN: '频道公告',
-                          zhTW: '頻道公告',
-                          en: 'Channel Announcement',
-                        )
-                      : _localizedText(
-                          zhCN: '群公告',
-                          zhTW: '群公告',
-                          en: 'Group Announcement',
+      builder: (ctx) {
+        final media = MediaQuery.of(ctx);
+        final maxHeight = media.size.height * 0.8;
+        return Padding(
+          padding: EdgeInsets.only(bottom: media.padding.bottom),
+          child: ConstrainedBox(
+            constraints: BoxConstraints(maxHeight: maxHeight),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(20, 20, 20, 16),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      const Icon(
+                        Icons.push_pin_rounded,
+                        size: 20,
+                        color: Color(0xFF2481CC),
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        widget.chatType == ChatType.channel
+                            ? _localizedText(
+                                zhCN: '频道公告',
+                                zhTW: '頻道公告',
+                                en: 'Channel Announcement',
+                              )
+                            : _localizedText(
+                                zhCN: '群公告',
+                                zhTW: '群公告',
+                                en: 'Group Announcement',
+                              ),
+                        style: TextStyle(
+                          fontSize: 17,
+                          fontWeight: FontWeight.w600,
+                          color: isDark ? Colors.white : Colors.black,
                         ),
-                  style: TextStyle(
-                    fontSize: 17,
-                    fontWeight: FontWeight.w600,
-                    color: isDark ? Colors.white : Colors.black,
+                      ),
+                    ],
                   ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 16),
-            SelectableText(
-              content,
-              style: TextStyle(
-                fontSize: 15,
-                height: 1.6,
-                color: isDark ? Colors.white70 : Colors.black87,
+                  const SizedBox(height: 16),
+                  Flexible(
+                    child: SingleChildScrollView(
+                      child: SelectableText(
+                        content,
+                        style: TextStyle(
+                          fontSize: 15,
+                          height: 1.6,
+                          color: isDark ? Colors.white70 : Colors.black87,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
               ),
             ),
-          ],
-        ),
-      ),
+          ),
+        );
+      },
     );
   }
 

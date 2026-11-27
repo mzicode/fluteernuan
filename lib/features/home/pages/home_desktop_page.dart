@@ -28,6 +28,7 @@ import '../../contacts/providers/contact_provider.dart';
 import '../../discover/pages/discover_page.dart';
 import '../../portal/pages/custom_portal_page.dart';
 import '../../contacts/pages/contacts_page.dart';
+import '../widgets/popup_announcement_host.dart';
 import '../../moments/pages/moments_page.dart'
     show
         MomentsPage,
@@ -368,7 +369,8 @@ class _HomeDesktopPageState extends ConsumerState<HomeDesktopPage> {
       });
     }
 
-    return Scaffold(
+    return PopupAnnouncementHost(
+      child: Scaffold(
       backgroundColor:
           isDark ? AppColors.darkBackground : AppColors.lightBackground,
       body: Row(
@@ -395,6 +397,7 @@ class _HomeDesktopPageState extends ConsumerState<HomeDesktopPage> {
           ),
         ],
       ),
+    ),
     );
   }
 

@@ -189,8 +189,8 @@ android {
 
     defaultConfig {
         applicationId = "com.nuanlin.im"
-        // Android 10 / EMUI 10.1 devices report API 29.
-        minSdk = 29
+        // Android 8.1 / EMUI 8.1 devices report API 27.
+        minSdk = 27
         targetSdk = 36
         versionCode = flutter.versionCode
         versionName = flutter.versionName
@@ -222,6 +222,9 @@ android {
             storePassword = resolvedStringProp("storePassword", keystoreProperties, "STORE_PASSWORD")
             val storePath = resolvedStringProp("storeFile", keystoreProperties, "STORE_FILE")
             storeFile = storePath.takeIf { it.isNotBlank() }?.let { file(it) }
+            enableV1Signing = true
+            enableV2Signing = true
+            enableV3Signing = true
         }
     }
 
@@ -234,8 +237,9 @@ android {
             if (applicationIdSuffixOverride.isNotBlank()) {
                 applicationIdSuffix = applicationIdSuffixOverride
             }
-            // Keep production release arm64-only. Emulator packaging opts into
-            // x86_64 explicitly without increasing normal mobile artifacts.
+            // Keep production release arm64-only. 32-bit ARM stays out until
+            // native plugin coverage is verified. Emulator packaging can still
+            // opt into x86_64 without changing normal mobile artifacts.
             ndk {
                 abiFilters.clear()
                 abiFilters.add("arm64-v8a")

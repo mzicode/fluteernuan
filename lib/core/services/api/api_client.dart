@@ -1,8 +1,8 @@
 // 文件用途：封装 HTTP 请求、鉴权、超时、上传下载、错误转换与通用响应解析。
 // 核心逻辑：统一添加认证和设备请求头，执行超时/重试/取消处理，并把 Dio 异常转换为应用可识别的 ApiResponse。
 import 'dart:async';
-
 import 'dart:convert';
+import 'dart:typed_data';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
@@ -203,8 +203,18 @@ class ApiResponse<T> {
   final int code;
   final String message;
   final T? data;
+  final String? errorCode;
+  final int? httpStatus;
+  final Map<String, dynamic>? rawData;
 
-  ApiResponse({required this.code, required this.message, this.data});
+  ApiResponse({
+    required this.code,
+    required this.message,
+    this.data,
+    this.errorCode,
+    this.httpStatus,
+    this.rawData,
+  });
 
   bool get isSuccess => code == 0;
 
@@ -216,12 +226,13 @@ class ApiResponse<T> {
     final rawCode = json['code'];
     final code =
         rawCode is int ? rawCode : int.tryParse(rawCode?.toString() ?? '') ?? 0;
+    final raw = json['data'];
     return ApiResponse(
       code: code,
       message: json['message'] ?? '',
-      data: json['data'] != null && fromJson != null
-          ? fromJson(json['data'])
-          : json['data'],
+      data: raw != null && fromJson != null ? fromJson(raw) : raw,
+      errorCode: json['error_code']?.toString(),
+      rawData: raw is Map ? Map<String, dynamic>.from(raw) : null,
     );
   }
 }
@@ -721,6 +732,7 @@ class ApiClient {
     Map<String, dynamic>? queryParameters,
     T Function(dynamic)? fromJson,
     CancelToken? cancelToken,
+    ResponseType? responseType,
   }) {
     return _get(
       path,
@@ -728,6 +740,7 @@ class ApiClient {
       fromJson: fromJson,
       cancelToken: cancelToken,
       retryNetworkErrors: true,
+      responseType: responseType,
     );
   }
 
@@ -755,6 +768,7 @@ class ApiClient {
     T Function(dynamic)? fromJson,
     CancelToken? cancelToken,
     required bool retryNetworkErrors,
+    ResponseType? responseType,
   }) async {
     if (_isDisposed) {
       return ApiResponse(
@@ -772,6 +786,7 @@ class ApiClient {
         queryParameters: queryParameters,
         cancelToken: cancelToken,
         options: Options(
+          responseType: responseType,
           extra: <String, dynamic>{
             if (!retryNetworkErrors) 'disableNetworkRetry': true,
           },
@@ -793,6 +808,23 @@ class ApiClient {
     }
   }
 
+  /// 下载二进制（公告签名图等）。失败返回 null，不把非 JSON 响应当业务错误解析。
+  Future<Uint8List?> getBytes(String path) async {
+    if (_isDisposed) return null;
+    try {
+      final response = await _dio.get<List<int>>(
+        path,
+        options: Options(responseType: ResponseType.bytes),
+      );
+      final data = response.data;
+      if (data == null || data.isEmpty) return null;
+      return Uint8List.fromList(data);
+    } catch (e) {
+      debugPrint('[API] getBytes failed: $e');
+      return null;
+    }
+  }
+
   /// POST 请求
   /// [data] 请求体，推荐使用 Map<String, dynamic> 或具体类型
   Future<ApiResponse<T>> post<T>(
@@ -802,6 +834,7 @@ class ApiClient {
     CancelToken? cancelToken,
     Duration? receiveTimeout,
     bool retryNetworkErrors = true,
+    ResponseType? responseType,
   }) async {
     if (_isDisposed) {
       return ApiResponse(
@@ -820,6 +853,7 @@ class ApiClient {
         cancelToken: cancelToken,
         options: Options(
           receiveTimeout: receiveTimeout,
+          responseType: responseType,
           extra: <String, dynamic>{
             if (!retryNetworkErrors) 'disableNetworkRetry': true,
           },
@@ -975,7 +1009,13 @@ class ApiClient {
     Response response,
     T Function(dynamic)? fromJson,
   ) {
-    final data = response.data;
+    final data = response.data is String
+        ? jsonDecode(
+            response.data as String,
+            reviver: (key, value) =>
+                key == 'call_id' && value is num ? value.toString() : value,
+          )
+        : response.data;
     if (data is! Map<String, dynamic>) {
       return ApiResponse(
         code: -1,
@@ -1140,10 +1180,32 @@ class ApiClient {
     );
   }
 
+  /// ResponseType.plain returns JSON error bodies as String — decode so
+  /// callers still see server `code`/`message` (e.g. NERTC 409 reasons).
+  Map<String, dynamic>? _coerceErrorResponseMap(dynamic responseData) {
+    if (responseData is Map<String, dynamic>) {
+      return responseData;
+    }
+    if (responseData is String) {
+      final trimmed = responseData.trim();
+      if (trimmed.isEmpty ||
+          !(trimmed.startsWith('{') || trimmed.startsWith('['))) {
+        return null;
+      }
+      try {
+        final decoded = jsonDecode(trimmed);
+        if (decoded is Map<String, dynamic>) return decoded;
+      } catch (_) {
+        return null;
+      }
+    }
+    return null;
+  }
+
   /// 处理 HTTP 错误响应
   ApiResponse<T> _handleBadResponse<T>(DioException e) {
-    final responseData = e.response?.data;
-    if (responseData is Map<String, dynamic>) {
+    final responseData = _coerceErrorResponseMap(e.response?.data);
+    if (responseData != null) {
       final message = _sanitizeServerMessage(
         responseData['message']?.toString() ??
             _apiText(
@@ -1159,13 +1221,16 @@ class ApiClient {
               e.response?.statusCode ??
               -1;
       _maybeNotifyPhoneBindRequired(code, message);
-      T? parsedData;
-      try {
-        parsedData = responseData['data'] as T?;
-      } catch (_) {
-        parsedData = null;
-      }
-      return ApiResponse(code: code, message: message, data: parsedData);
+      final raw = responseData['data'];
+      final rawData =
+          raw is Map ? Map<String, dynamic>.from(raw) : null;
+      return ApiResponse(
+        code: code,
+        message: message,
+        errorCode: responseData['error_code']?.toString(),
+        httpStatus: e.response?.statusCode,
+        rawData: rawData,
+      );
     }
 
     final fallbackStatusCode = e.response?.statusCode ?? 0;

@@ -370,25 +370,6 @@ class _ChatInputBarState extends State<ChatInputBar> {
                                     widget.onSend(text);
                                   }
                                 },
-                                onChanged: (text) {
-                                  // Android 真机的物理/自动化 Enter 有时不会触发
-                                  // TextInputAction.send，而是向多行输入框插入换行。
-                                  // 对移动端的行尾 Enter 做发送兜底；粘贴的中间换行不受影响。
-                                  if (!_isDesktop &&
-                                      text.endsWith('\n') &&
-                                      text.trim().isNotEmpty) {
-                                    final message =
-                                        text.substring(0, text.length - 1);
-                                    widget.controller.value = TextEditingValue(
-                                      text: message,
-                                      selection: TextSelection.collapsed(
-                                        offset: message.length,
-                                      ),
-                                    );
-                                    HapticFeedback.lightImpact();
-                                    widget.onSend(message);
-                                  }
-                                },
                               ),
                             ),
                           ),

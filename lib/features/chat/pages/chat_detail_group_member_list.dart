@@ -12,10 +12,12 @@ extension _ChatDetailGroupMemberList on _GroupInfoSheet {
     AsyncValue<dynamic> chatDetailAsync,
   ) {
     final officialUsers = ref.watch(officialUsersProvider).valueOrNull ?? {};
-    return ref.watch(chatMembersProvider(groupId)).when(
+    return ref.watch(chatMemberPreviewProvider(groupId)).when(
           data: (members) {
-            final myRole = chatDetailAsync.value?.myRole ?? 0;
-            final visibleMembers = myRole >= 2
+            final chat = chatDetailAsync.value;
+            final myRole = chat?.myRole ?? 0;
+            final memberProtection = chat?.memberProtection ?? false;
+            final visibleMembers = !memberProtection || myRole >= 2
                 ? members
                 : members.where((member) => member.role >= 2).toList();
             return Column(

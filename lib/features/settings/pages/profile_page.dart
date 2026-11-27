@@ -2180,21 +2180,6 @@ class _QRCodePageState extends ConsumerState<ProfileQRCodePage>
                                             ),
                                           ),
                                         ),
-                                        Transform.translate(
-                                          offset: Offset(
-                                            0,
-                                            isShortScreen ? -9 : -11,
-                                          ),
-                                          child: Text(
-                                            '应用客服',
-                                            style: TextStyle(
-                                              fontSize: isShortScreen ? 16 : 18,
-                                              color: Colors.black
-                                                  .withOpacity(0.72),
-                                              fontWeight: FontWeight.w700,
-                                            ),
-                                          ),
-                                        ),
                                         SizedBox(
                                           height: isShortScreen ? 0 : 2,
                                         ),

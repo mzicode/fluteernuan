@@ -43,7 +43,8 @@ extension _ChatDetailPageFlow on _ChatDetailPageState {
     if (_scrollController.hasClients && !_isLoadingMore) {
       final maxScroll = _scrollController.position.maxScrollExtent;
       final currentScroll = _scrollController.offset;
-      // 距离顶部 500 像素时开始加载
+      // 领取记录已从列表去掉。剩下的内容撑不满一屏时 maxScroll 为 0，
+      // 仍要继续拉更早的消息，否则红包气泡和上面的历史都出不来。
       if (maxScroll - currentScroll < 500) {
         _loadMoreMessages();
       }
@@ -90,6 +91,11 @@ extension _ChatDetailPageFlow on _ChatDetailPageState {
 
   /// 滚动到指定消息（用于点击回复预览时跳转）
   Future<void> _scrollToMessage(String messageId, {int? targetSeq}) async {
+    if (messageId.isEmpty) {
+      _showMessageLocateFailed();
+      return;
+    }
+
     final found = await ref
         .read(messageListProvider(widget.chatId).notifier)
         .ensureMessageLoaded(messageId, targetSeq: targetSeq);
@@ -99,33 +105,19 @@ extension _ChatDetailPageFlow on _ChatDetailPageState {
     final index = messages.indexWhere((m) => m.id == messageId);
 
     if (!found || index == -1) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            _translate(
-              context,
-              'message_not_in_current_view',
-              _localizedText(
-                zhCN: '消息不在当前视图中',
-                zhTW: '消息不在目前視圖中',
-                en: 'The message is not in the current view',
-              ),
-            ),
-          ),
-          duration: Duration(seconds: 1),
-        ),
-      );
+      _showMessageNotInView();
       return;
     }
 
+    await WidgetsBinding.instance.endOfFrame;
+    if (!mounted) return;
     _scrollMessageIntoView(messageId);
   }
 
-  void _scrollMessageIntoView(String messageId, {int retries = 8}) {
+  void _scrollMessageIntoView(String messageId, {int retries = 16}) {
     if (!mounted) return;
 
-    final key = _messageKeys[messageId];
-    final targetContext = key?.currentContext;
+    final targetContext = _messageKeys[messageId]?.currentContext;
     if (targetContext != null) {
       Scrollable.ensureVisible(
         targetContext,
@@ -137,29 +129,94 @@ extension _ChatDetailPageFlow on _ChatDetailPageState {
       return;
     }
 
-    if (retries <= 0) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            _localizedText(
-              zhCN: '暂时无法定位到这条消息',
-              zhTW: '暫時無法定位到這則訊息',
-              en: 'Unable to locate this message for now',
-            ),
-          ),
-          duration: const Duration(seconds: 1),
-        ),
-      );
+    if (retries <= 0 || !_scrollController.hasClients) {
+      _showMessageLocateFailed();
       return;
     }
 
+    final messages = ref.read(messageListProvider(widget.chatId));
+    final displayItems =
+        _buildMessageDisplayItems(_visibleChatMessages(messages));
+    final displayIndex = _messageDisplayIndex(displayItems, messageId);
+    if (displayIndex < 0) {
+      _showMessageNotInView();
+      return;
+    }
+
+    final position = _scrollController.position;
+    var firstBuilt = -1;
+    var lastBuilt = -1;
+    for (var i = 0; i < displayItems.length; i++) {
+      final ids = displayItems[i].albumMessages.isNotEmpty
+          ? displayItems[i].albumMessages.map((item) => item.id)
+          : [displayItems[i].message.id];
+      if (ids.any((id) => _messageKeys[id]?.currentContext != null)) {
+        if (firstBuilt < 0) firstBuilt = i;
+        lastBuilt = i;
+      }
+    }
+
+    final current = position.pixels;
+    final maxOffset = position.maxScrollExtent;
+    double nextOffset;
+    if (firstBuilt < 0 || lastBuilt < 0) {
+      nextOffset = (displayIndex * 84.0).clamp(0.0, maxOffset);
+    } else if (displayIndex < firstBuilt) {
+      nextOffset =
+          (current - position.viewportDimension * 0.85).clamp(0.0, maxOffset);
+    } else if (displayIndex > lastBuilt) {
+      nextOffset =
+          (current + position.viewportDimension * 0.85).clamp(0.0, maxOffset);
+    } else {
+      nextOffset = (displayIndex * 84.0).clamp(0.0, maxOffset);
+    }
+
+    if ((nextOffset - current).abs() >= 1) {
+      _scrollController.jumpTo(nextOffset);
+    }
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      Future.delayed(const Duration(milliseconds: 80), () {
+      Future.delayed(const Duration(milliseconds: 32), () {
         if (mounted) {
           _scrollMessageIntoView(messageId, retries: retries - 1);
         }
       });
     });
+  }
+
+  void _showMessageNotInView() {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          _translate(
+            context,
+            'message_not_in_current_view',
+            _localizedText(
+              zhCN: '消息不在当前视图中',
+              zhTW: '消息不在目前視圖中',
+              en: 'The message is not in the current view',
+            ),
+          ),
+        ),
+        duration: const Duration(seconds: 1),
+      ),
+    );
+  }
+
+  void _showMessageLocateFailed() {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          _localizedText(
+            zhCN: '暂时无法定位到这条消息',
+            zhTW: '暫時無法定位到這則訊息',
+            en: 'Unable to locate this message for now',
+          ),
+        ),
+        duration: const Duration(seconds: 1),
+      ),
+    );
   }
 
   /// 高亮显示目标消息

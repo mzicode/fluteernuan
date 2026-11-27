@@ -10,6 +10,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:agora_rtc_engine/agora_rtc_engine.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart' as rtc;
 import 'package:livekit_client/livekit_client.dart' as lk;
+import 'package:nertc_core/nertc_core.dart';
 import 'package:flutter_callkit_incoming/flutter_callkit_incoming.dart';
 import 'package:flutter_callkit_incoming/entities/entities.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
@@ -24,6 +25,7 @@ import '../i18n/server_message_localizer.dart';
 import 'api/api_client.dart';
 import 'api/auth_service.dart';
 import 'api/system_settings_service.dart';
+import 'api/nertc_service.dart';
 import 'api/websocket_service.dart';
 import 'android_callkit_helper.dart';
 import 'call_end_tone_service.dart';
@@ -33,6 +35,7 @@ import 'device_service.dart';
 import 'media_permission_policy.dart';
 import 'incoming_call_tone_service.dart';
 import 'outgoing_call_tone_service.dart';
+import 'nertc_call_adapter.dart';
 
 String _callServiceText({
   required String zhCN,
@@ -250,7 +253,15 @@ bool callKitAcceptIsActiveReplay({
 }
 
 String _normalizeRtcProvider(String? provider) {
-  return provider?.trim().toLowerCase() == 'livekit' ? 'livekit' : 'agora';
+  switch (provider?.trim().toLowerCase()) {
+    case 'livekit':
+      return 'livekit';
+    case 'nertc':
+    case 'nertc-basic-v1':
+      return 'nertc';
+    default:
+      return 'agora';
+  }
 }
 
 @visibleForTesting
@@ -500,11 +511,13 @@ class _DetachedCallMedia {
     this.engine,
     this.liveKitRoom,
     this.liveKitLocalVideoTrack,
+    this.nertcAdapter,
   });
 
   final RtcEngine? engine;
   final lk.Room? liveKitRoom;
   final lk.LocalVideoTrack? liveKitLocalVideoTrack;
+  final NertcCallAdapter? nertcAdapter;
 }
 
 class _AcceptAttempt {
@@ -537,6 +550,7 @@ class CallService extends StateNotifier<CallServiceState> {
   final IncomingCallToneService _incomingCallTone;
   final OutgoingCallToneService _outgoingCallTone;
   final CallTerminalOutbox _terminalOutbox = CallTerminalOutbox();
+  late final NertcService _nertcService = NertcService(_api);
   Future<void>? _terminalOutboxDrainFuture;
   RtcEngine? _engine;
   bool _agoraPreviewStarted = false;
@@ -555,6 +569,13 @@ class CallService extends StateNotifier<CallServiceState> {
   lk.EventsListener<lk.RoomEvent>? _liveKitListener;
   lk.LocalVideoTrack? _liveKitLocalVideoTrack;
   lk.RemoteVideoTrack? _liveKitRemoteVideoTrack;
+  NertcCallAdapter? _nertcAdapter;
+  String? _nertcAppKey;
+  /// From GET /rtc/nertc/config.enabled — independent of create's rtc_provider
+  /// (create still returns agora; media engine is chosen after consent lock).
+  bool _nertcNegotiationEnabled = false;
+  Completer<void>? _nertcAcceptedGate;
+  Timer? _nertcRenewTimer;
   String? _liveKitRemoteIdentity;
   lk.Room? _preparedLiveKitRoom;
   Future<void>? _preparedLiveKitFuture;
@@ -896,6 +917,10 @@ class CallService extends StateNotifier<CallServiceState> {
         final data = response.data!;
         _isEnabled = data['enabled'] == true;
         _appId = data['app_id']?.toString();
+        final maybeKey = data['app_key']?.toString();
+        if (maybeKey != null && maybeKey.isNotEmpty) {
+          _nertcAppKey = maybeKey;
+        }
         _rtcProvider = _normalizeRtcProvider(
           _firstStringValue(data, ['rtc_provider', 'provider']),
         );
@@ -909,11 +934,17 @@ class CallService extends StateNotifier<CallServiceState> {
         if (_rtcProvider == 'livekit' && _liveKitServerUrl != null) {
           unawaited(_prepareLiveKitConnection(_liveKitServerUrl!));
         }
+        // Member NERTC config: enabled flag only (no AppKey). Always probe so
+        // create/incoming can still report rtc_provider=agora per contract.
+        await _refreshNertcNegotiationFlag();
         final appIdPreview = (_appId == null || _appId!.isEmpty)
             ? '-'
             : (_appId!.length > 8 ? '${_appId!.substring(0, 8)}...' : _appId!);
         debugPrint(
-          '[CallService] Enabled: $_isEnabled, provider=$_rtcProvider, AppId: $appIdPreview, LiveKit=${_liveKitServerUrl?.isNotEmpty == true}',
+          '[CallService] Enabled: $_isEnabled, provider=$_rtcProvider, '
+          'nertcNegotiation=$_nertcNegotiationEnabled, AppId: $appIdPreview, '
+          'LiveKit=${_liveKitServerUrl?.isNotEmpty == true}, '
+          'apiBase=${ApiConfig.baseUrl}',
         );
         return true;
       }
@@ -923,11 +954,51 @@ class CallService extends StateNotifier<CallServiceState> {
     return false;
   }
 
+  Future<void> _refreshNertcNegotiationFlag() async {
+    try {
+      final nertcResponse =
+          await _api.get<Map<String, dynamic>>('/rtc/nertc/config');
+      if (nertcResponse.isSuccess && nertcResponse.data != null) {
+        final nertcData = nertcResponse.data!;
+        _nertcNegotiationEnabled = nertcData['enabled'] == true;
+        // Spec: member config does not return AppKey; keep any accidental key
+        // only as a cache hint — credential.app_key remains authoritative.
+        final key = nertcData['app_key']?.toString();
+        if (key != null && key.isNotEmpty) {
+          _nertcAppKey = key;
+        }
+      } else {
+        _nertcNegotiationEnabled = false;
+      }
+    } catch (error) {
+      debugPrint('[CallService] NERTC config probe failed: $error');
+      _nertcNegotiationEnabled = false;
+    }
+  }
+
   bool _hasRtcConfig(String provider) {
     if (provider == 'livekit') {
       return _liveKitServerUrl != null && _liveKitServerUrl!.isNotEmpty;
     }
+    if (provider == 'nertc') {
+      // AppKey arrives in GET /rtc/nertc/token credential, not /call/config.
+      return _nertcNegotiationEnabled;
+    }
     return _appId != null && _appId!.isNotEmpty;
+  }
+
+  /// Media engine for this call. Create/WS keep signaling provider=agora when
+  /// NERTC negotiation is on; ignore those Agora media credentials after lock.
+  String _mediaProviderForCall(String signalingProvider) {
+    if (_nertcNegotiationEnabled &&
+        signalingProvider != 'livekit' &&
+        signalingProvider != 'nertc') {
+      return 'nertc';
+    }
+    if (_nertcNegotiationEnabled && signalingProvider == 'nertc') {
+      return 'nertc';
+    }
+    return signalingProvider;
   }
 
   String _providerFromData(
@@ -951,14 +1022,15 @@ class CallService extends StateNotifier<CallServiceState> {
   }
 
   bool get isEnabled {
-    if (!_isEnabled || !_hasRtcConfig(_rtcProvider)) {
-      return false;
-    }
-    return true;
+    if (!_isEnabled) return false;
+    if (_nertcNegotiationEnabled) return true;
+    return _hasRtcConfig(_rtcProvider);
   }
 
   String? _callUnavailableReason() {
-    if (!_isEnabled || !_hasRtcConfig(_rtcProvider)) {
+    if (!_isEnabled) return _mediaServiceUnavailableText();
+    if (_nertcNegotiationEnabled) return null;
+    if (!_hasRtcConfig(_rtcProvider)) {
       return _mediaServiceUnavailableText();
     }
     return null;
@@ -981,6 +1053,16 @@ class CallService extends StateNotifier<CallServiceState> {
       final active = data['active'] == true;
       if (!active && state.isInCall && (state.callInfo?.callId ?? 0) > 0) {
         final currentCallId = state.callInfo!.callId!;
+        // CallKit resume fires /call/active while accept consent/token is still
+        // in flight. Tearing down here cancels the accept token request
+        // ("请求已取消") and the incoming UI never comes up.
+        if (_isAcceptingCall || _activeAcceptAttempt != null) {
+          debugPrint(
+            '[CallService] Active-call sync inactive ignored during accept '
+            'call_id=$currentCallId',
+          );
+          return;
+        }
         debugPrint(
           '[CallService] Active-call sync returned inactive; confirming '
           'call_id=$currentCallId',
@@ -1548,7 +1630,8 @@ class CallService extends StateNotifier<CallServiceState> {
 
     await ensureConfigLoaded();
     if (!_isOutgoingAttemptActive(attemptId)) return false;
-    if (!_isEnabled || !_hasRtcConfig(_rtcProvider)) {
+    if (!_isEnabled ||
+        (!_nertcNegotiationEnabled && !_hasRtcConfig(_rtcProvider))) {
       // A cold-start request can race Android network restoration. Failed
       // loads are not cached; give the in-page preparation flow one quick
       // retry instead of incorrectly reporting that calls are disabled.
@@ -1558,7 +1641,8 @@ class CallService extends StateNotifier<CallServiceState> {
     }
     _traceOutgoingAttempt(attemptId, 'config_ready');
     debugPrint(
-      '[CallService] After loadConfig: isEnabled=$_isEnabled, provider=$_rtcProvider',
+      '[CallService] After loadConfig: isEnabled=$_isEnabled, '
+      'provider=$_rtcProvider, nertcNegotiation=$_nertcNegotiationEnabled',
     );
 
     final unavailableReason = _callUnavailableReason();
@@ -1607,6 +1691,7 @@ class CallService extends StateNotifier<CallServiceState> {
       final createRequestStarted = DateTime.now();
       final createFuture = _api.post<Map<String, dynamic>>(
         '/call/create',
+        responseType: ResponseType.plain,
         data: {
           'target_user_id': targetUserId,
           'call_type': type == CallType.voice ? 'voice' : 'video',
@@ -1619,7 +1704,11 @@ class CallService extends StateNotifier<CallServiceState> {
           await cleanupFuture;
           if (!_isOutgoingAttemptActive(attemptId)) return false;
           _traceOutgoingAttempt(attemptId, 'cleanup_done');
-          await _ensureOutgoingLocalPreview(attemptId, _rtcProvider);
+          // NERTC negotiation ignores create's Agora credentials — do not start
+          // an Agora local preview or the two engines fight and cancel the call.
+          if (!_nertcNegotiationEnabled) {
+            await _ensureOutgoingLocalPreview(attemptId, _rtcProvider);
+          }
         } catch (_) {
           // The create request is already in flight. Resolve it and cancel a
           // late server-side call so preview failures never leave a ghost ring.
@@ -1696,11 +1785,17 @@ class CallService extends StateNotifier<CallServiceState> {
         _traceOutgoingAttempt(attemptId, 'cleanup_done');
       }
       final arbitrated = _truthyValue(data['arbitrated']);
-      final rtcProvider = _providerFromData(data);
+      // create 仍回 native Agora credentials；NERTC enabled 时忽略这些媒体凭据。
+      final signalingProvider = _providerFromData(data);
+      final rtcProvider = _mediaProviderForCall(signalingProvider);
+      debugPrint(
+        '[CallService] create signaling=$signalingProvider media=$rtcProvider '
+        'nertcNegotiation=$_nertcNegotiationEnabled',
+      );
       final channelName =
           _firstStringValue(data, ['channel_name', 'room_name']);
       final roomName = _firstStringValue(data, ['room_name', 'channel_name']);
-      final token = data['token']?.toString() ?? '';
+      final legacyToken = data['token']?.toString() ?? '';
       final callId = data['call_id'] is int
           ? data['call_id'] as int
           : int.tryParse(data['call_id']?.toString() ?? '') ?? 0;
@@ -1713,7 +1808,7 @@ class CallService extends StateNotifier<CallServiceState> {
           ? data['agora_uid'] as int
           : int.tryParse(data['agora_uid']?.toString() ?? '') ?? 0;
       final serverUrl = _serverUrlFromData(data);
-      if (channelName.isEmpty || token.isEmpty) {
+      if (channelName.isEmpty || (rtcProvider != 'nertc' && legacyToken.isEmpty)) {
         debugPrint(
           '[CallService] Invalid call data: channelName or token is empty',
         );
@@ -1757,7 +1852,9 @@ class CallService extends StateNotifier<CallServiceState> {
         clearPermissionIssue: true,
       );
 
-      if (type == CallType.video && rtcProvider != _rtcProvider) {
+      if (type == CallType.video &&
+          rtcProvider != 'nertc' &&
+          rtcProvider != _rtcProvider) {
         await _ensureOutgoingLocalPreview(attemptId, rtcProvider);
         if (!_isOutgoingAttemptActive(attemptId)) {
           await _cancelCallById(createdCallId, sessionId: createdSessionId);
@@ -1766,10 +1863,61 @@ class CallService extends StateNotifier<CallServiceState> {
       }
 
       _traceOutgoingAttempt(attemptId, 'rtc_join_start');
-      if (rtcProvider == 'livekit') {
+      if (rtcProvider == 'nertc') {
+        // 暖鄰顺序: create(忽略 Agora) → calling 期 consent → ready 后 GET token
+        // → 等 native accepted → SDK create/join → media-ready → connected。
+        // 云信: create(appKey from credential) → joinChannel(basic token,...)。
+        if (!kIsWeb && !kSilentCallQaMode) {
+          await _outgoingCallTone.start();
+        }
+        _startOutgoingCallTimeout(callId);
+        _armNertcAcceptedGate();
+        _traceOutgoingAttempt(attemptId, 'nertc_consent_wait_start');
+        await _nertcConsentUntilReady(
+          channelName: channelName,
+          callId: callId.toString(),
+          sessionId: createdSessionId ?? '',
+          isStillActive: () =>
+              _isOutgoingAttemptActive(attemptId) &&
+              state.callInfo?.callId == callId &&
+              (state.state == CallState.outgoing ||
+                  state.state == CallState.connecting),
+          timeout: const Duration(seconds: 45),
+          stopOnPeerAccepted: true,
+        );
+        if (!_isOutgoingAttemptActive(attemptId)) {
+          await _leaveChannel();
+          await _cancelCallById(createdCallId, sessionId: createdSessionId);
+          return false;
+        }
+        final nertcSession = await _nertcService.token(
+          channelName: channelName,
+          expectedCallId: callId.toString(),
+          expectedSessionId: createdSessionId ?? '',
+        );
+        // 不在 calling 擅自开媒体：等 accepted（若已到则立即继续）。
+        if (state.state == CallState.outgoing) {
+          _traceOutgoingAttempt(attemptId, 'nertc_wait_accepted');
+          await _waitForNertcAcceptedGate(
+            isStillActive: () =>
+                _isOutgoingAttemptActive(attemptId) &&
+                state.callInfo?.callId == callId,
+          );
+        }
+        if (!_isOutgoingAttemptActive(attemptId)) {
+          await _leaveChannel();
+          await _cancelCallById(createdCallId, sessionId: createdSessionId);
+          return false;
+        }
+        await _joinNertc(
+          session: nertcSession,
+          video: type == CallType.video,
+        );
+        _traceOutgoingAttempt(attemptId, 'nertc_joined');
+      } else if (rtcProvider == 'livekit') {
         await _joinLiveKitRoom(
           serverUrl: serverUrl!,
-          token: token,
+          token: legacyToken,
           callType: type,
           isStillActive: () => _isOutgoingAttemptActive(attemptId),
         );
@@ -1801,7 +1949,7 @@ class CallService extends StateNotifier<CallServiceState> {
 
         final isVideo = type == CallType.video;
         await _joinAgoraChannelAndWait(
-          token: token,
+           token: legacyToken,
           channelName: channelName,
           uid: agoraUid > 0 ? agoraUid : 0,
           isVideo: isVideo,
@@ -1845,7 +1993,9 @@ class CallService extends StateNotifier<CallServiceState> {
       if (readyData['status']?.toString() == 'connected') {
         handleCallConnected(readyData);
       }
-      if (state.state == CallState.outgoing &&
+      // NERTC 路径已在 join 前启动振铃超时；Agora/LiveKit 仍在媒体就绪后启动。
+      if (rtcProvider != 'nertc' &&
+          state.state == CallState.outgoing &&
           state.callInfo?.callId == callId) {
         if (!kIsWeb && !kSilentCallQaMode) {
           await _outgoingCallTone.start();
@@ -1883,6 +2033,9 @@ class CallService extends StateNotifier<CallServiceState> {
   ) async {
     if (!_isOutgoingAttemptActive(attemptId) ||
         state.callInfo?.type != CallType.video) {
+      return;
+    }
+    if (provider == 'nertc') {
       return;
     }
     if (provider == 'livekit') {
@@ -1961,7 +2114,8 @@ class CallService extends StateNotifier<CallServiceState> {
     final callId = _callIdFromPayload(data);
     final channelName = _firstStringValue(data, ['channel_name', 'room_name']);
     final roomName = _firstStringValue(data, ['room_name', 'channel_name']);
-    final rtcProvider = _providerFromData(data);
+    // WS/Push 仍可能带 rtc_provider=agora；NERTC enabled 时媒体走协商路径。
+    final rtcProvider = _mediaProviderForCall(_providerFromData(data));
     final serverUrl = _serverUrlFromData(data);
     final callerId = data['caller_id']?.toString();
     final callerName = data['caller_name']?.toString();
@@ -2198,8 +2352,10 @@ class CallService extends StateNotifier<CallServiceState> {
 
     if (Platform.isAndroid) {
       final lifecycleState = WidgetsBinding.instance.lifecycleState;
-      final isForeground = lifecycleState == AppLifecycleState.resumed ||
-          lifecycleState == AppLifecycleState.inactive;
+      // `inactive` is also emitted while Android is moving the app to the
+      // background. Only a resumed Flutter activity is safe for the in-app
+      // call page; all other states must use the system full-screen call UI.
+      final isForeground = lifecycleState == AppLifecycleState.resumed;
 
       debugPrint(
         '[CallService] Android lifecycleState: $lifecycleState, isForeground: $isForeground',
@@ -2714,6 +2870,197 @@ class CallService extends StateNotifier<CallServiceState> {
     return response.data!;
   }
 
+  /// 轮询 `/rtc/nertc/session` 直到 ready / 可取 token。
+  /// 主叫绑振铃超时；被叫必须在 `/call/accept` 之前完成。
+  ///
+  /// [stopOnPeerAccepted] 仅主叫为 true：对端已 native accept 时停止轮询改 GET token。
+  /// 被叫 accept 流程会先把本地 state 设成 connecting，绝不能据此跳过 consent，
+  /// 否则 GET token 会 409 both_updated_apps_must_consent_before_accept。
+  Future<void> _nertcConsentUntilReady({
+    required String channelName,
+    required String callId,
+    required String sessionId,
+    CancelToken? cancelToken,
+    bool Function()? isStillActive,
+    Duration timeout = const Duration(seconds: 30),
+    bool stopOnPeerAccepted = false,
+  }) async {
+    if (!_nertcNegotiationEnabled) {
+      throw StateError('NERTC negotiation is not enabled');
+    }
+    final deadline = DateTime.now().add(timeout);
+    var delayMs = 300;
+    while (true) {
+      if (cancelToken?.isCancelled == true) {
+        throw StateError('NERTC session cancelled');
+      }
+      if (isStillActive != null && !isStillActive()) {
+        throw StateError('NERTC session aborted');
+      }
+      // 仅主叫：对端 accepted 事件已到（gate 完成），停止 POST session。
+      if (stopOnPeerAccepted &&
+          _nertcAcceptedGate != null &&
+          _nertcAcceptedGate!.isCompleted) {
+        debugPrint(
+          '[CallService] NERTC consent stop: peer accepted (caller gate)',
+        );
+        return;
+      }
+      final status = await _nertcService.consent(
+        channelName: channelName,
+        callId: callId,
+        sessionId: sessionId,
+        cancelToken: cancelToken,
+      );
+      debugPrint('[CallService] NERTC consent status=$status');
+      if (status == NertcConsentStatus.ready ||
+          status == NertcConsentStatus.tryToken) {
+        return;
+      }
+      if (status == NertcConsentStatus.aborted) {
+        throw StateError('NERTC session aborted by server');
+      }
+      if (DateTime.now().isAfter(deadline)) {
+        throw TimeoutException('NERTC session is not ready');
+      }
+      await Future<void>.delayed(Duration(milliseconds: delayMs));
+      delayMs = (delayMs + 100).clamp(300, 1200);
+    }
+  }
+
+  void _armNertcAcceptedGate() {
+    if (_nertcAcceptedGate != null && !_nertcAcceptedGate!.isCompleted) {
+      return;
+    }
+    _nertcAcceptedGate = Completer<void>();
+  }
+
+  void _signalNertcAcceptedGate() {
+    final gate = _nertcAcceptedGate;
+    if (gate != null && !gate.isCompleted) {
+      gate.complete();
+    }
+  }
+
+  Future<void> _waitForNertcAcceptedGate({
+    bool Function()? isStillActive,
+    Duration timeout = const Duration(seconds: 45),
+  }) async {
+    final gate = _nertcAcceptedGate;
+    if (gate == null || gate.isCompleted) return;
+    if (state.state == CallState.connecting ||
+        state.state == CallState.connected) {
+      return;
+    }
+    final deadline = DateTime.now().add(timeout);
+    while (!gate.isCompleted) {
+      if (isStillActive != null && !isStillActive()) {
+        throw StateError('NERTC accepted wait aborted');
+      }
+      if (DateTime.now().isAfter(deadline)) {
+        throw TimeoutException('NERTC accepted event timeout');
+      }
+      await Future.any<void>([
+        gate.future,
+        Future<void>.delayed(const Duration(milliseconds: 200)),
+      ]);
+    }
+  }
+
+  Future<NertcSession> _prepareNertcSession({
+    required String channelName,
+    required String callId,
+    required String sessionId,
+    CancelToken? cancelToken,
+    bool Function()? isStillActive,
+    Duration timeout = const Duration(seconds: 30),
+  }) async {
+    await _nertcConsentUntilReady(
+      channelName: channelName,
+      callId: callId,
+      sessionId: sessionId,
+      cancelToken: cancelToken,
+      isStillActive: isStillActive,
+      timeout: timeout,
+    );
+    return _nertcService.token(
+      channelName: channelName,
+      expectedCallId: callId,
+      expectedSessionId: sessionId,
+      cancelToken: cancelToken,
+    );
+  }
+
+  Future<void> _joinNertc({
+    required NertcSession session,
+    required bool video,
+  }) async {
+    // AppKey 只在 credential 中返回；用 token 响应的 app_key 初始化 SDK。
+    _nertcAppKey = session.appKey;
+    final adapter = NertcCallAdapter(
+      onRemoteJoined: (uid) {
+        if (!_isDisposed) {
+          _markCallConnected(remoteUid: uid, source: 'nertc_user_joined');
+        }
+      },
+      onRemoteLeft: (_) => _beginReconnect('nertc_remote_left'),
+      onRemoteVideoChanged: (uid, enabled) {
+        if (_isDisposed || state.callInfo == null) return;
+        // videoStart 可能早于 userJoined；不能要求 remoteUid 已匹配，
+        // 否则 isRemoteVideoEnabled 一直 false，界面只显示自己。
+        state = state.copyWith(
+          isRemoteVideoEnabled: enabled,
+          callInfo: state.callInfo!.copyWith(remoteUid: uid),
+        );
+      },
+      onConnectionLost: () => _beginReconnect('nertc_connection_lost'),
+    );
+    _nertcAdapter = adapter;
+    await adapter.initialize(session.appKey);
+    await adapter.join(
+      token: session.token,
+      channelName: session.channelName,
+      uid: session.sdkUid,
+      video: video,
+    );
+    _scheduleNertcRenew(session, video: video);
+  }
+
+  void _scheduleNertcRenew(NertcSession session, {required bool video}) {
+    _nertcRenewTimer?.cancel();
+    final expiresAt = session.expiresAt;
+    if (expiresAt == null) return;
+    final remaining = expiresAt.difference(DateTime.now().toUtc());
+    // 暖鄰建议: 到期前 min(60s, TTL/3)；基础 Token 无可靠 SDK 到期回调。
+    final leadSeconds = (remaining.inSeconds ~/ 3).clamp(1, 60);
+    final delay = remaining - Duration(seconds: leadSeconds);
+    _nertcRenewTimer = Timer(
+      delay.isNegative ? const Duration(seconds: 1) : delay,
+      () async {
+        try {
+          final info = state.callInfo;
+          if (info == null || info.rtcProvider != 'nertc') return;
+          final renewed = await _nertcService.renew(info.channelName);
+          if (renewed == null || renewed.token.isEmpty) return;
+          // 基础 Token：官方 updatePermissionKey 仅用于高级 Token。
+          // 续期后 leave + joinChannel(新 token)。
+          await _nertcAdapter?.rejoinWithToken(
+            token: renewed.token,
+            channelName: renewed.channelName.isNotEmpty
+                ? renewed.channelName
+                : info.channelName,
+            uid: renewed.sdkUid,
+            video: video,
+          );
+          _scheduleNertcRenew(renewed, video: video);
+        } catch (error) {
+          debugPrint('[CallService] NERTC token renew failed: $error');
+          _beginReconnect('nertc_token_renew_failed');
+        }
+      },
+    );
+  }
+
   void _markCallConnected({
     int? remoteUid,
     DateTime? connectedAt,
@@ -2750,9 +3097,8 @@ class CallService extends StateNotifier<CallServiceState> {
     );
     final callKitUuid = _callKitUuidForCall(callInfo.callId);
     if (callKitUuid != null && (Platform.isIOS || Platform.isAndroid)) {
-      // Android CallKit uses its own looping Ringtone. Explicitly marking the
-      // system call connected stops that ringtone on ROMs that do not stop it
-      // reliably after the accept callback alone.
+      // Update the system call state; Android's connected broadcast does not
+      // stop the incoming ringtone (handled separately on Xiaomi).
       unawaited(_markSystemCallConnected(callKitUuid));
     }
     _startConnectedClock(nextInfo);
@@ -2935,6 +3281,29 @@ class CallService extends StateNotifier<CallServiceState> {
       if (await _acceptAttemptNoLongerActive(attempt)) return false;
       debugPrint('[CallService] Permissions & config ready');
 
+      // 被叫: consent → GET token → native accept → SDK join（暖鄰 §5）。
+      NertcSession? preparedNertcSession;
+      final useNertc = currentInfo.rtcProvider == 'nertc' ||
+          _mediaProviderForCall(currentInfo.rtcProvider) == 'nertc';
+      if (useNertc) {
+        await _nertcConsentUntilReady(
+          channelName: currentInfo.channelName,
+          callId: originalCallId.toString(),
+          sessionId: acceptedSessionId ?? '',
+          cancelToken: attempt.cancelToken,
+          isStillActive: () => _isAcceptAttemptActive(attempt),
+          timeout: const Duration(seconds: 20),
+        );
+        if (await _acceptAttemptNoLongerActive(attempt)) return false;
+        preparedNertcSession = await _nertcService.token(
+          channelName: currentInfo.channelName,
+          expectedCallId: originalCallId.toString(),
+          expectedSessionId: acceptedSessionId ?? '',
+          cancelToken: attempt.cancelToken,
+        );
+        if (await _acceptAttemptNoLongerActive(attempt)) return false;
+      }
+
       if (!_isEnabled) {
         await _rollbackAcceptAttempt(
           attempt,
@@ -2949,6 +3318,7 @@ class CallService extends StateNotifier<CallServiceState> {
       final acceptRequestStarted = DateTime.now();
       final response = await _api.post<Map<String, dynamic>>(
         '/call/accept',
+        responseType: ResponseType.plain,
         data: {
           'call_id': originalCallId,
           if (acceptedSessionId?.trim().isNotEmpty == true)
@@ -2988,10 +3358,13 @@ class CallService extends StateNotifier<CallServiceState> {
       );
       acceptedSessionId = _sessionIdFromPayload(data) ?? acceptedSessionId;
       attempt.sessionId = acceptedSessionId;
-      final rtcProvider = _providerFromData(
+      final signalingProvider = _providerFromData(
         data,
         fallback: currentInfo.rtcProvider,
       );
+      final rtcProvider = useNertc
+          ? 'nertc'
+          : _mediaProviderForCall(signalingProvider);
       final responseChannel =
           _firstStringValue(data, ['channel_name', 'room_name']);
       final responseRoom =
@@ -3001,13 +3374,14 @@ class CallService extends StateNotifier<CallServiceState> {
           : currentInfo.channelName;
       final roomName =
           responseRoom.isNotEmpty ? responseRoom : currentInfo.roomName;
-      final token = data['token']?.toString() ?? '';
+      final legacyToken = data['token']?.toString() ?? '';
       final serverUrl = _serverUrlFromData(data) ?? currentInfo.serverUrl;
       final agoraUid = data['agora_uid'] is int
           ? data['agora_uid'] as int
           : int.tryParse(data['agora_uid']?.toString() ?? '') ?? 0;
 
-      if (channelName.isEmpty || token.isEmpty) {
+      if (channelName.isEmpty ||
+          (rtcProvider != 'nertc' && legacyToken.isEmpty)) {
         debugPrint('[CallService] Accept call: channelName or token is empty');
         await _rollbackAcceptAttempt(
           attempt,
@@ -3026,7 +3400,7 @@ class CallService extends StateNotifier<CallServiceState> {
         );
         return false;
       }
-      if (rtcProvider == 'agora' && (_appId == null || _appId!.isEmpty)) {
+       if (rtcProvider == 'agora' && (_appId == null || _appId!.isEmpty)) {
         debugPrint('[CallService] Accept call: Agora App ID is empty');
         await _rollbackAcceptAttempt(
           attempt,
@@ -3049,12 +3423,24 @@ class CallService extends StateNotifier<CallServiceState> {
       );
       if (await _acceptAttemptNoLongerActive(attempt)) return false;
 
-      _startConnectionTimeout();
+       _startConnectionTimeout();
 
-      if (rtcProvider == 'livekit') {
-        await _joinLiveKitRoom(
-          serverUrl: serverUrl!,
-          token: token,
+        if (rtcProvider == 'nertc') {
+          final nertcSession = preparedNertcSession ??
+              await _nertcService.token(
+                channelName: channelName,
+                expectedCallId: acceptedCallId.toString(),
+                expectedSessionId: acceptedSessionId ?? '',
+                cancelToken: attempt.cancelToken,
+              );
+          await _joinNertc(
+           session: nertcSession,
+           video: callType == CallType.video,
+         );
+       } else if (rtcProvider == 'livekit') {
+         await _joinLiveKitRoom(
+           serverUrl: serverUrl!,
+           token: legacyToken,
           callType: callType,
           isStillActive: () => _isAcceptAttemptActive(attempt),
         );
@@ -3076,7 +3462,7 @@ class CallService extends StateNotifier<CallServiceState> {
         debugPrint('[CallService] Joining RTC channel');
         final isVideoCall = callType == CallType.video;
         await _joinAgoraChannelAndWait(
-          token: token,
+           token: legacyToken,
           channelName: channelName,
           uid: agoraUid > 0 ? agoraUid : 0,
           isVideo: isVideoCall,
@@ -3195,7 +3581,10 @@ class CallService extends StateNotifier<CallServiceState> {
       final provider = state.callInfo?.rtcProvider ?? _rtcProvider;
       await _loadConfigIfNeeded(provider);
 
+      // NERTC path initializes from credential.app_key at join time; do not
+      // pre-create Agora while negotiation is enabled.
       if (_isEnabled &&
+          !_nertcNegotiationEnabled &&
           provider == 'agora' &&
           _appId != null &&
           _appId!.isNotEmpty &&
@@ -3533,7 +3922,8 @@ class CallService extends StateNotifier<CallServiceState> {
       return;
     }
 
-    if (state.callInfo?.rtcProvider == 'livekit') {
+    if (state.callInfo?.rtcProvider == 'livekit' ||
+        state.callInfo?.rtcProvider == 'nertc') {
       return;
     }
 
@@ -3549,6 +3939,10 @@ class CallService extends StateNotifier<CallServiceState> {
 
     if (state.callInfo?.rtcProvider == 'livekit') {
       await _liveKitRoom?.setSpeakerOn(enabled);
+      return;
+    }
+    if (state.callInfo?.rtcProvider == 'nertc') {
+      await _nertcAdapter?.setSpeakerphoneOn(enabled);
       return;
     }
 
@@ -3740,6 +4134,17 @@ class CallService extends StateNotifier<CallServiceState> {
     _outgoingAttemptStopwatch = null;
     final finishingCallId = state.callInfo?.callId;
     final callKitUuid = _callKitUuidForCall(finishingCallId);
+    final finishingInfo = state.callInfo;
+    bool isFinishingCallCurrent() =>
+        !_isDisposed &&
+        state.callInfo?.callId == finishingCallId &&
+        state.callInfo?.sessionId == finishingInfo?.sessionId;
+    await stopXiaomiIncomingCallkitTone(
+      callId: finishingCallId,
+      sessionId: finishingInfo?.sessionId,
+      isCurrentCall: isFinishingCallCurrent,
+    );
+    if (!isFinishingCallCurrent()) return;
     final shouldPlayEndTone = !kSilentCallQaMode &&
         (state.state == CallState.connected ||
             state.state == CallState.reconnecting);
@@ -3749,13 +4154,18 @@ class CallService extends StateNotifier<CallServiceState> {
     // see fresh mutable fields.
     final cleanup = _leaveChannel();
     _localCleanupFuture = cleanup;
-    unawaited(_outgoingCallTone.stop());
+    // Wait for the looping player to stop before exposing idle state. Some
+    // Xiaomi audio implementations keep playing when stop is left pending.
+    await _outgoingCallTone.stop();
     onCallEnded?.call(reason);
     _resetState(immediate: true);
 
     if (callKitUuid != null && (Platform.isIOS || Platform.isAndroid)) {
       final systemCleanup = _endSystemCall(callKitUuid);
-      if (awaitSystemCall) {
+      // Xiaomi ROMs can keep CallKit ringtone/vibration alive when endCall is
+      // dispatched in the background. Android must complete native cleanup;
+      // iOS keeps the existing optional wait behavior.
+      if (Platform.isAndroid || awaitSystemCall) {
         await systemCleanup;
       } else {
         unawaited(systemCleanup);
@@ -4024,6 +4434,8 @@ class CallService extends StateNotifier<CallServiceState> {
         _liveKitRoom?.localParticipant?.setMicrophoneEnabled(!newMuted) ??
             Future.value(),
       );
+    } else if (state.callInfo?.rtcProvider == 'nertc') {
+      unawaited(_nertcAdapter?.setMuted(newMuted) ?? Future<void>.value());
     } else {
       _engine?.muteLocalAudioStream(newMuted);
     }
@@ -4064,6 +4476,8 @@ class CallService extends StateNotifier<CallServiceState> {
     if (state.isVideoEnabled == newEnabled) return;
     if (state.callInfo?.rtcProvider == 'livekit') {
       await _setLiveKitCameraEnabled(newEnabled);
+    } else if (state.callInfo?.rtcProvider == 'nertc') {
+      await _nertcAdapter?.setVideoEnabled(newEnabled);
     } else {
       if (newEnabled) {
         await _engine?.enableVideo();
@@ -4175,6 +4589,10 @@ class CallService extends StateNotifier<CallServiceState> {
       await _switchLiveKitCamera();
       return;
     }
+    if (state.callInfo?.rtcProvider == 'nertc') {
+      await _nertcAdapter?.switchCamera();
+      return;
+    }
     await _engine?.switchCamera();
   }
 
@@ -4205,6 +4623,9 @@ class CallService extends StateNotifier<CallServiceState> {
       return _liveKitLocalVideoTrack != null ||
           _findLiveKitLocalVideoTrack() != null;
     }
+    if (state.callInfo?.rtcProvider == 'nertc') {
+      return _nertcAdapter != null;
+    }
     return _engine != null;
   }
 
@@ -4216,6 +4637,9 @@ class CallService extends StateNotifier<CallServiceState> {
         track,
         fit: rtc.RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
       );
+    }
+    if (state.callInfo?.rtcProvider == 'nertc') {
+      return _nertcAdapter?.localView() ?? const SizedBox();
     }
     if (_engine == null) return const SizedBox();
     return AgoraVideoView(
@@ -4237,6 +4661,12 @@ class CallService extends StateNotifier<CallServiceState> {
         track,
         fit: rtc.RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
       );
+    }
+    if (state.callInfo?.rtcProvider == 'nertc') {
+      final uid = state.callInfo?.remoteUid;
+      return uid == null
+          ? const SizedBox()
+          : (_nertcAdapter?.remoteView(uid) ?? const SizedBox());
     }
     if (_engine == null || state.callInfo?.remoteUid == null) {
       return const SizedBox();
@@ -4319,6 +4749,16 @@ class CallService extends StateNotifier<CallServiceState> {
     _agoraJoinCompleter = null;
     _agoraPreviewStarted = false;
 
+    final nertcAdapter = _nertcAdapter;
+    _nertcAdapter = null;
+    _nertcRenewTimer?.cancel();
+    _nertcRenewTimer = null;
+    final acceptedGate = _nertcAcceptedGate;
+    _nertcAcceptedGate = null;
+    if (acceptedGate != null && !acceptedGate.isCompleted) {
+      acceptedGate.complete();
+    }
+
     final liveKitRoom = _liveKitRoom;
     final liveKitListener = _liveKitListener;
     final liveKitLocalVideoTrack = _liveKitLocalVideoTrack;
@@ -4338,10 +4778,16 @@ class CallService extends StateNotifier<CallServiceState> {
       engine: engine,
       liveKitRoom: liveKitRoom,
       liveKitLocalVideoTrack: liveKitLocalVideoTrack,
+      nertcAdapter: nertcAdapter,
     );
   }
 
   Future<void> _disposeDetachedCallMedia(_DetachedCallMedia media) async {
+    try {
+      await media.nertcAdapter?.leave();
+    } catch (e) {
+      debugPrint('[NERTC] Detached leave error: $e');
+    }
     final room = media.liveKitRoom;
     if (room != null) {
       try {
@@ -4480,6 +4926,12 @@ class CallService extends StateNotifier<CallServiceState> {
       // this costs one request but avoids a visible false hangup.
       await Future<void>.delayed(const Duration(milliseconds: 350));
       if (_isDisposed || state.callInfo?.callId != callId) return;
+      if (_isAcceptingCall || _activeAcceptAttempt != null) {
+        debugPrint(
+          '[CallService] Inactive confirm skipped during accept call_id=$callId',
+        );
+        return;
+      }
 
       final response = await _api.get<Map<String, dynamic>>('/call/active');
       if (!response.isSuccess || response.data == null) return;
@@ -4801,7 +5253,8 @@ class CallService extends StateNotifier<CallServiceState> {
       android: AndroidParams(
         isCustomNotification: true,
         isShowLogo: false,
-        ringtonePath: 'system_ringtone_default',
+        // Bundled raw/ringtone_default — avoid OEM-empty system ringtone URI.
+        ringtonePath: kSilentCallQaMode ? '' : 'ringtone_default',
         backgroundColor: '#5865F2',
         backgroundUrl: '',
         actionColor: '#4CAF50',
@@ -4902,9 +5355,12 @@ class CallService extends StateNotifier<CallServiceState> {
       unawaited(_outgoingCallTone.stop());
       state = state.copyWith(state: CallState.connecting);
       _startConnectionTimeout();
+      _signalNertcAcceptedGate();
       final info = state.callInfo;
-      if (info?.callId != null) {
-        unawaited(_refreshConnectedStateAfterAccept(info!));
+      // NERTC：主叫在 startCall 里等 gate → join → 再报 media-ready。
+      // Agora/LiveKit：仍可在 accepted 后立刻刷新 connected。
+      if (info?.callId != null && info!.rtcProvider != 'nertc') {
+        unawaited(_refreshConnectedStateAfterAccept(info));
       }
     }
   }

@@ -43,6 +43,7 @@ import '../../../core/services/api/system_settings_service.dart';
 import '../../../core/utils/platform_utils.dart';
 import '../../../core/utils/image_file_format.dart';
 import '../../../shared/widgets/avatar_widget.dart';
+import '../../../shared/widgets/official_badge.dart';
 import '../../../shared/widgets/animated_gif_image.dart';
 import '../../../shared/widgets/colored_name_widget.dart';
 import '../../../shared/widgets/emoji_status_widget.dart';
@@ -62,6 +63,7 @@ import '../../wallet/providers/wallet_provider.dart';
 import '../../wallet/widgets/red_packet_bubble.dart';
 import '../../wallet/widgets/transfer_bubble.dart';
 import '../utils/call_preview_formatter.dart';
+import '../utils/message_content_preview.dart';
 import '../models/forward_bundle_snapshot.dart';
 import '../pages/forward_bundle_preview_page.dart';
 
@@ -136,6 +138,8 @@ class MessageBubble extends StatelessWidget {
   final Color? customIncomingColor;
   final Function(String userId, String userName)? onMentionUser; // 长按头像@用户
   final bool isGroupChat;
+  final int senderRole;
+  final bool senderOfficial;
   final bool canOpenMemberProfile;
   final double messageFontSize;
   final List<MessageItem> albumMessages;
@@ -161,6 +165,8 @@ class MessageBubble extends StatelessWidget {
     this.customIncomingColor,
     this.onMentionUser,
     this.isGroupChat = false,
+    this.senderRole = 0,
+    this.senderOfficial = false,
     this.canOpenMemberProfile = true,
     this.messageFontSize = 16,
     this.albumMessages = const [],
@@ -306,7 +312,7 @@ class MessageBubble extends StatelessWidget {
                   onTap: onTap,
                   onLongPress: onLongPressStart == null ? onLongPress : null,
                   onLongPressStart: onLongPressStart,
-                  onSecondaryTapDown: onSecondaryTapDown, // 右键点击（桌面端）
+                  onSecondaryTapDown: onSecondaryTapDown,
                   onDoubleTap: onDoubleTap,
                   child: Container(
                     constraints: BoxConstraints(

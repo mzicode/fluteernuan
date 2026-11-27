@@ -6,24 +6,32 @@ part of 'chat_detail_page.dart';
 extension _ChatDetailForwardActions on _ChatDetailPageState {
   // 流程逻辑：`_canForwardMessage` 根据输入状态生成页面片段或触发回调，交互副作用由页面状态边界统一处理。
   bool _canForwardMessage(MessageItem message) {
-    return _canForwardFromCurrentChat && !message.burnAfterRead;
+    return _canForwardFromCurrentChat && message.isForwardableContent;
   }
 
-  void _showForwardBlockedHint() {
+  void _showForwardBlockedHint({bool redPacket = false}) {
     AppSnackBar.warning(
       context,
-      _localizedText(
-        zhCN: '阅后即焚消息不支持转发',
-        zhTW: '閱後即焚訊息不支援轉發',
-        en: 'This message cannot be forwarded',
-      ),
+      redPacket
+          ? _localizedText(
+              zhCN: '红包不支持转发',
+              zhTW: '紅包不支援轉發',
+              en: 'Red packets cannot be forwarded',
+            )
+          : _localizedText(
+              zhCN: '阅后即焚消息不支持转发',
+              zhTW: '閱後即焚訊息不支援轉發',
+              en: 'This message cannot be forwarded',
+            ),
     );
   }
 
   /// 处理转发消息
   void _handleForward(MessageItem message) {
     if (!_canForwardMessage(message)) {
-      _showForwardBlockedHint();
+      _showForwardBlockedHint(
+        redPacket: message.type == MessageItemType.redPacket,
+      );
       return;
     }
     GlobalHaptics.selection();
@@ -154,6 +162,21 @@ extension _ChatDetailForwardActions on _ChatDetailPageState {
                           child: const Text('单个转发'),
                         ),
                         TextButton(
+                          onPressed: isSubmitting
+                              ? null
+                              : () {
+                                  Navigator.pop(sheetContext);
+                                  _showGroupForwardDialog(message);
+                                },
+                          child: Text(
+                            _localizedText(
+                              zhCN: '群聊',
+                              zhTW: '群聊',
+                              en: 'Groups',
+                            ),
+                          ),
+                        ),
+                        TextButton(
                           onPressed: isSubmitting || contacts.isEmpty
                               ? null
                               : () => setSheetState(() {
@@ -247,6 +270,198 @@ extension _ChatDetailForwardActions on _ChatDetailPageState {
                           isSubmitting
                               ? '发送中...'
                               : '发送给 ${selectedContactKeys.length} 位好友',
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  /// 显示独立的群聊转发列表。
+  void _showGroupForwardDialog(MessageItem message) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final selectedChatIds = <String>{};
+    var isSubmitting = false;
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (sheetContext) => StatefulBuilder(
+        builder: (sheetContext, setSheetState) {
+          final chatState = ref.read(chatListProvider);
+          final groups = [
+            ...chatState.pinnedChats,
+            ...chatState.regularChats,
+          ].where((chat) {
+            return chat.type == ChatItemType.group && chat.id != widget.chatId;
+          }).toList(growable: false);
+          final allSelected = groups.isNotEmpty &&
+              groups.every((chat) => selectedChatIds.contains(chat.id));
+
+          Future<void> submit() async {
+            if (isSubmitting || selectedChatIds.isEmpty) return;
+            setSheetState(() => isSubmitting = true);
+            final targetChatIds = selectedChatIds.toList(growable: false);
+            if (sheetContext.mounted) Navigator.pop(sheetContext);
+            if (mounted) {
+              _showTopToast(_localizedText(
+                zhCN: '正在转发到 ${targetChatIds.length} 个群聊',
+                zhTW: '正在轉發到 ${targetChatIds.length} 個群聊',
+                en: 'Forwarding to ${targetChatIds.length} groups',
+              ));
+            }
+
+            final notifier = ref.read(
+              messageListProvider(widget.chatId).notifier,
+            );
+            final results = await forwardMessagesToTargetsReliably(
+              [message],
+              targetChatIds,
+              (targetId, sourceMessage, clientMsgId) => notifier.forwardMessage(
+                sourceMessage.id,
+                targetId,
+                clientMsgId: clientMsgId,
+                sourceMessage: sourceMessage,
+              ),
+            );
+            if (mounted) {
+              final successCount =
+                  results.where((result) => result.isComplete).length;
+              final failedCount =
+                  results.where((result) => !result.isComplete).length;
+              _showTopToast(_localizedText(
+                zhCN: '群聊转发完成：成功 $successCount 个，失败 $failedCount 个',
+                zhTW: '群聊轉發完成：成功 $successCount 個，失敗 $failedCount 個',
+                en: 'Group forwarding complete: $successCount succeeded, $failedCount failed',
+              ));
+            }
+          }
+
+          return DraggableScrollableSheet(
+            initialChildSize: 0.72,
+            minChildSize: 0.5,
+            maxChildSize: 0.92,
+            builder: (context, scrollController) => Container(
+              decoration: BoxDecoration(
+                color: isDark ? const Color(0xFF1C1C1E) : Colors.white,
+                borderRadius:
+                    const BorderRadius.vertical(top: Radius.circular(20)),
+              ),
+              child: Column(
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 18, 8, 8),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            _localizedText(
+                              zhCN: '转发到群聊',
+                              zhTW: '轉發到群聊',
+                              en: 'Forward to groups',
+                            ),
+                            style: TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.w600,
+                              color: isDark ? Colors.white : Colors.black,
+                            ),
+                          ),
+                        ),
+                        TextButton(
+                          onPressed: isSubmitting || groups.isEmpty
+                              ? null
+                              : () => setSheetState(() {
+                                    if (allSelected) {
+                                      selectedChatIds.clear();
+                                    } else {
+                                      selectedChatIds
+                                        ..clear()
+                                        ..addAll(groups
+                                            .take(100)
+                                            .map((chat) => chat.id));
+                                    }
+                                  }),
+                          child: Text(allSelected ? '取消全选' : '全选'),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Expanded(
+                    child: groups.isEmpty
+                        ? Center(
+                            child: Text(
+                              _localizedText(
+                                zhCN: '暂无可转发的群聊',
+                                zhTW: '暫無可轉發的群聊',
+                                en: 'No groups available',
+                              ),
+                              style: TextStyle(
+                                color: isDark ? Colors.white60 : Colors.black54,
+                              ),
+                            ),
+                          )
+                        : ListView.builder(
+                            controller: scrollController,
+                            itemCount: groups.length,
+                            itemBuilder: (context, index) {
+                              final chat = groups[index];
+                              final selected =
+                                  selectedChatIds.contains(chat.id);
+                              void toggle() {
+                                if (isSubmitting) return;
+                                setSheetState(() {
+                                  if (selected) {
+                                    selectedChatIds.remove(chat.id);
+                                  } else if (selectedChatIds.length < 100) {
+                                    selectedChatIds.add(chat.id);
+                                  } else {
+                                    _showTopToast('单次最多选择100个群聊');
+                                  }
+                                });
+                              }
+
+                              return ListTile(
+                                leading: AvatarWidget(
+                                  avatar: chat.avatar,
+                                  name: chat.name,
+                                  size: 44,
+                                ),
+                                title: Text(
+                                  chat.name,
+                                  style: TextStyle(
+                                    color: isDark ? Colors.white : Colors.black,
+                                  ),
+                                ),
+                                trailing: Checkbox(
+                                  value: selected,
+                                  onChanged:
+                                      isSubmitting ? null : (_) => toggle(),
+                                ),
+                                onTap: isSubmitting ? null : toggle,
+                              );
+                            },
+                          ),
+                  ),
+                  SafeArea(
+                    top: false,
+                    minimum: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+                    child: SizedBox(
+                      width: double.infinity,
+                      child: FilledButton(
+                        onPressed: selectedChatIds.isEmpty || isSubmitting
+                            ? null
+                            : submit,
+                        child: Text(
+                          isSubmitting
+                              ? '转发中...'
+                              : '转发到 ${selectedChatIds.length} 个群聊',
                         ),
                       ),
                     ),
@@ -403,7 +618,9 @@ extension _ChatDetailForwardActions on _ChatDetailPageState {
     String chatTitle,
   ) async {
     if (!_canForwardMessage(message)) {
-      _showForwardBlockedHint();
+      _showForwardBlockedHint(
+        redPacket: message.type == MessageItemType.redPacket,
+      );
       return;
     }
     if (_isForwardingMessages) return;

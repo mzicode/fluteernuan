@@ -32,12 +32,14 @@ import '../../../core/services/storage/models/message_model.dart'
     if (dart.library.js_interop) '../../../core/services/storage/models/message_model_web.dart';
 import '../../../shared/widgets/avatar_widget.dart';
 import '../services/emoji_store_service.dart';
+import '../services/group_join_marker_store.dart';
 import '../utils/call_preview_formatter.dart';
 import '../utils/system_message_text.dart';
 import 'message_provider.dart'
     show
         MessageItem,
         MessageMemoryWindowCache,
+        messageListProvider,
         persistMessageItemsToIsarCache,
         persistMessageItemsToWebWindowCache,
         readWebMessageWindowMaxSeq;
@@ -439,6 +441,47 @@ List<ChatItem> mergeServerChatsWithLocalDrafts(
   ).toList();
 }
 
+/// 服务端没有最后一条消息时，用本地进群标记回填会话预览。
+@visibleForTesting
+List<ChatItem> applyGroupJoinMarkersToChats({
+  required List<ChatItem> chats,
+  required Map<String, DateTime> markers,
+  required String previewText,
+}) {
+  if (markers.isEmpty) return chats;
+  return chats.map((chat) {
+    final joinedAt = markers[chat.id];
+    if (joinedAt == null) return chat;
+    if (!shouldApplyGroupJoinPreview(chat.lastMessage)) return chat;
+    return chat.copyWith(
+      lastMessage: previewText,
+      lastMessageTime: chat.lastMessageTime ?? joinedAt,
+      clearLastMessageSender: true,
+      lastMessageType: MessageContentType.text,
+      lastMessageMediaUrl: null,
+      lastMessageFailed: false,
+    );
+  }).toList();
+}
+
+@visibleForTesting
+List<String> groupJoinMarkersReadyToClear({
+  required Iterable<ChatItem> chats,
+  required Map<String, DateTime> markers,
+}) {
+  if (markers.isEmpty) return const [];
+  final ready = <String>[];
+  for (final chat in chats) {
+    if (!markers.containsKey(chat.id)) continue;
+    if (shouldApplyGroupJoinPreview(chat.lastMessage) ||
+        isGroupJoinPreviewText(chat.lastMessage)) {
+      continue;
+    }
+    ready.add(chat.id);
+  }
+  return ready;
+}
+
 enum ChatItemType { private, group, channel }
 
 /// 会话列表的可见投影：服务端会话元数据与本地草稿、未读和实时预览在此合并。
@@ -518,6 +561,8 @@ class ChatListNotifier extends StateNotifier<ChatListState> {
   final Ref _ref;
   final String _accountId;
   final _uuid = const Uuid();
+  late final GroupJoinMarkerStore _groupJoinMarkers =
+      GroupJoinMarkerStore(_accountId);
 
   // 存储 handler IDs 用于清理
   final List<String> _wsHandlerIds = [];
@@ -534,6 +579,9 @@ class ChatListNotifier extends StateNotifier<ChatListState> {
   Future<void>? _initializeFuture;
   DateTime? _lastMissedMessageSyncTime;
   DateTime? _lastHotPrewarmTime;
+  /// 本地刚清除过的会话：短时间内列表刷新若仍带回旧预览，强制保持空态。
+  final Map<String, DateTime> _locallyClearedAt = <String, DateTime>{};
+  static const Duration _localClearGuard = Duration(seconds: 45);
   static const Duration _missedMessageSyncMinInterval = Duration(seconds: 8);
   static const Duration _typingTimeout = Duration(seconds: 8);
   static const int _recentMessageIdLimit = 512;
@@ -567,8 +615,78 @@ class ChatListNotifier extends StateNotifier<ChatListState> {
   ) : super(const ChatListState()) {
     if (_accountId.isNotEmpty) {
       _setupWebSocketHandlers();
+      unawaited(_groupJoinMarkers.ensureLoaded());
     }
   }
+
+  String _groupJoinPreviewLabel() => groupJoinPreviewText();
+
+  Future<void> _ensureGroupJoinMarkersLoaded() =>
+      _groupJoinMarkers.ensureLoaded();
+
+  /// 进群成功后写入本地标记，会话列表无预览时显示「已加入群组」。
+  Future<void> markLocalGroupJoined(String chatId) async {
+    final id = chatId.trim();
+    if (id.isEmpty || _isDisposed) return;
+    final joinedAt = DateTime.now();
+    await _groupJoinMarkers.markJoined(id, at: joinedAt);
+    if (_isDisposed) return;
+
+    final existing = _findChatById(id);
+    if (existing != null) {
+      final updated = existing.copyWith(
+        lastMessage: shouldApplyGroupJoinPreview(existing.lastMessage)
+            ? _groupJoinPreviewLabel()
+            : existing.lastMessage,
+        lastMessageTime: existing.lastMessageTime ?? joinedAt,
+        clearLastMessageSender: shouldApplyGroupJoinPreview(existing.lastMessage),
+        lastMessageType: shouldApplyGroupJoinPreview(existing.lastMessage)
+            ? MessageContentType.text
+            : existing.lastMessageType,
+        lastMessageMediaUrl: shouldApplyGroupJoinPreview(existing.lastMessage)
+            ? null
+            : existing.lastMessageMediaUrl,
+        lastMessageFailed: false,
+      );
+      _moveToTop(updated);
+      return;
+    }
+  }
+
+  Future<void> _clearGroupJoinMarker(String chatId) async {
+    final id = chatId.trim();
+    if (id.isEmpty) return;
+    await _groupJoinMarkers.clear(id);
+  }
+
+  Future<List<ChatItem>> _applyLocalGroupJoinMarkers(
+    List<ChatItem> chats,
+  ) async {
+    await _ensureGroupJoinMarkersLoaded();
+    if (_isDisposed) return chats;
+
+    final markers = _groupJoinMarkers.markers;
+    if (markers.isEmpty) return chats;
+
+    final readyToClear = groupJoinMarkersReadyToClear(
+      chats: chats,
+      markers: markers,
+    );
+    if (readyToClear.isNotEmpty) {
+      unawaited(_groupJoinMarkers.clearMany(readyToClear));
+    }
+
+    final remaining = Map<String, DateTime>.from(markers)
+      ..removeWhere((key, _) => readyToClear.contains(key));
+    return applyGroupJoinMarkersToChats(
+      chats: chats,
+      markers: remaining,
+      previewText: _groupJoinPreviewLabel(),
+    );
+  }
+
+  bool hasLocalGroupJoinMarker(String chatId) =>
+      _groupJoinMarkers.has(chatId);
 
   /// 安全地更新 state（防止 dispose 后更新）
   void _safeSetState(ChatListState Function(ChatListState) update) {
@@ -710,7 +828,7 @@ class ChatListNotifier extends StateNotifier<ChatListState> {
       }),
     );
 
-    // 监听聊天记录被清空（仅自己/双方）
+    // 监听聊天记录被清空（仅自己/双方）——本地也要彻底清，避免旧消息从缓存回流。
     _wsHandlerIds.add(
       _wsService.registerHandler(WSMessageType.chatHistoryCleared, (data) {
         final chatId = data['chat_id']?.toString();
@@ -719,8 +837,7 @@ class ChatListNotifier extends StateNotifier<ChatListState> {
         final chat = _findChatById(chatId);
         if (chat == null) return;
 
-        _clearTypingForChat(chatId);
-        clearHistoryPreview(chatId);
+        unawaited(clearChatHistoryThoroughly(chatId, skipApi: true));
       }),
     );
 
@@ -772,10 +889,11 @@ class ChatListNotifier extends StateNotifier<ChatListState> {
         final chatId = data['chat_id'] as String?;
         final name = data['name'] as String?;
         debugPrint('[Chat] Join request approved for chat: $chatId ($name)');
-        loadFromServer();
-        if (chatId != null) {
+        if (chatId != null && chatId.isNotEmpty) {
+          unawaited(markLocalGroupJoined(chatId));
           _ref.invalidate(chatDetailProvider(chatId));
         }
+        loadFromServer();
       }),
     );
 
@@ -1321,12 +1439,8 @@ class ChatListNotifier extends StateNotifier<ChatListState> {
 
   String _normalizeServerChatPreview(String? text, int? rawType) {
     final value = (text ?? '').trim();
-    if (looksLikeServerSystemPreviewText(value)) {
-      return resolveServerPreviewText(
-        value,
-        currentUserId: _getCurrentUserId(),
-      );
-    }
+    if (rawType == 14) return '';
+    if (isMemberMuteSystemMessage(value)) return '';
     switch (rawType) {
       case 2:
         return _chatPreviewLabel('photo');
@@ -1362,12 +1476,7 @@ class ChatListNotifier extends StateNotifier<ChatListState> {
 
   String _normalizeStoredChatPreview(String? text, storage.MessageType type) {
     final value = (text ?? '').trim();
-    if (looksLikeServerSystemPreviewText(value)) {
-      return resolveServerPreviewText(
-        value,
-        currentUserId: _getCurrentUserId(),
-      );
-    }
+    if (isMemberMuteSystemMessage(value)) return '';
     switch (type) {
       case storage.MessageType.image:
         return _chatPreviewLabel('photo');
@@ -1445,19 +1554,26 @@ class ChatListNotifier extends StateNotifier<ChatListState> {
         return (_chatPreviewLabel('red_packet'), MessageContentType.text);
       case 13:
         return (_chatPreviewLabel('transfer'), MessageContentType.text);
+      case 14:
+        return ('', MessageContentType.text);
       case 99:
+        final systemText = message.content.text ?? '';
+        if (isMemberMuteSystemMessage(systemText)) {
+          return ('', MessageContentType.text);
+        }
         return (
           resolveSystemMessageText(
-            message.content.text ?? '',
+            systemText,
             currentUserId: _getCurrentUserId(),
           ),
           MessageContentType.text,
         );
       default:
-        return (
-          message.content.text ?? _chatPreviewLabel('message'),
-          MessageContentType.text,
-        );
+        final text = message.content.text ?? _chatPreviewLabel('message');
+        if (isMemberMuteSystemMessage(message.content.text ?? '')) {
+          return ('', MessageContentType.text);
+        }
+        return (text, MessageContentType.text);
     }
   }
 
@@ -1542,6 +1658,16 @@ class ChatListNotifier extends StateNotifier<ChatListState> {
           return a.createdAt.compareTo(b.createdAt);
         });
       final message = batch.last;
+      // 禁言/解禁系统通知不覆盖会话预览，回退到批次内上一条可见消息
+      api.Message? previewMessage;
+      for (var i = batch.length - 1; i >= 0; i--) {
+        final candidate = batch[i];
+        if (isMemberMuteSystemMessage(candidate.content.text ?? '')) {
+          continue;
+        }
+        previewMessage = candidate;
+        break;
+      }
 
       _clearTypingForChat(message.chatId);
       final currentUserId = _getCurrentUserId() ?? '';
@@ -1550,7 +1676,9 @@ class ChatListNotifier extends StateNotifier<ChatListState> {
       for (final candidate in batch) {
         final isSelf = candidate.senderId == currentUserId;
         final isSystemMsg = candidate.type == 99;
-        if (!isSelf && !isSystemMsg) {
+        final isMuteNotice =
+            isMemberMuteSystemMessage(candidate.content.text ?? '');
+        if (!isSelf && !isSystemMsg && !isMuteNotice) {
           if (shouldIncrementRealtimeUnread(
             messageSeq: candidate.seq,
             projectedLastMessageSeq: chat.lastMessageSeq,
@@ -1566,13 +1694,29 @@ class ChatListNotifier extends StateNotifier<ChatListState> {
         }
       }
 
-      final preview = _previewForMessage(message);
+      if (previewMessage == null) {
+        // 批次全是禁言通知：只推进 seq，不改预览文案
+        updates[entry.key] = chat.copyWith(
+          unreadCount: chat.unreadCount + unreadDelta,
+          lastMessageSeq: message.seq,
+          hasMention: mentionsMe ? true : chat.hasMention,
+          lastMessageFailed: false,
+        );
+        continue;
+      }
+
+      final preview = _previewForMessage(previewMessage);
+      if ((preview.$1).trim().isNotEmpty &&
+          !isGroupJoinPreviewText(preview.$1)) {
+        unawaited(_clearGroupJoinMarker(entry.key));
+      }
       final updatedChat = chat.copyWith(
         lastMessage: preview.$1,
-        lastMessageTime: message.createdAt,
-        lastMessageSender: _normalizePreviewSenderName(message.senderName),
+        lastMessageTime: previewMessage.createdAt,
+        lastMessageSender:
+            _normalizePreviewSenderName(previewMessage.senderName),
         lastMessageType: preview.$2,
-        lastMessageMediaUrl: _previewMediaUrlForMessage(message),
+        lastMessageMediaUrl: _previewMediaUrlForMessage(previewMessage),
         unreadCount: chat.unreadCount + unreadDelta,
         lastMessageSeq: message.seq,
         hasMention: mentionsMe ? true : chat.hasMention,
@@ -1723,7 +1867,10 @@ class ChatListNotifier extends StateNotifier<ChatListState> {
       final priorityIds = _subscriptionChatIds(chats, limit: 8).toSet();
       final targets = chats
           .where(
-            (chat) => chat.id != _activeChatId && priorityIds.contains(chat.id),
+            (chat) =>
+                chat.id != _activeChatId &&
+                priorityIds.contains(chat.id) &&
+                !_isLocallyClearedRecently(chat.id),
           )
           .take(5)
           .toList();
@@ -2526,6 +2673,55 @@ class ChatListNotifier extends StateNotifier<ChatListState> {
   // 防抖：记录上次请求时间，避免短时间内重复请求
   DateTime? _lastLoadTime;
   static const _minLoadInterval = Duration(milliseconds: 500);
+  static const _minSilentLoadInterval = Duration(seconds: 2);
+
+  void _markChatHistoryClearedLocally(String chatId) {
+    if (chatId.isEmpty) return;
+    _locallyClearedAt[chatId] = DateTime.now();
+  }
+
+  bool _isLocallyClearedRecently(String chatId) {
+    final clearedAt = _locallyClearedAt[chatId];
+    if (clearedAt == null) return false;
+    if (DateTime.now().difference(clearedAt) > _localClearGuard) {
+      _locallyClearedAt.remove(chatId);
+      return false;
+    }
+    return true;
+  }
+
+  /// 清除后服务端列表可能短暂仍带旧 lastMsg；守卫期内压成空预览。
+  /// 若出现比清除时刻更新的消息，则放行并解除守卫。
+  ChatItem _applyLocalClearGuard(ChatItem chat) {
+    final clearedAt = _locallyClearedAt[chat.id];
+    if (clearedAt == null) return chat;
+    if (DateTime.now().difference(clearedAt) > _localClearGuard) {
+      _locallyClearedAt.remove(chat.id);
+      return chat;
+    }
+    final lastTime = chat.lastMessageTime;
+    if (lastTime != null && lastTime.isAfter(clearedAt)) {
+      _locallyClearedAt.remove(chat.id);
+      return chat;
+    }
+    return chat.copyWith(
+      clearLastMessage: true,
+      clearLastMessageTime: true,
+      clearLastMessageSender: true,
+      clearLastMessageType: true,
+      lastMessageMediaUrl: null,
+      lastMessageSeq: 0,
+      unreadCount: 0,
+      isRead: true,
+      hasMention: false,
+      lastMessageFailed: false,
+    );
+  }
+
+  List<ChatItem> _applyLocalClearGuards(List<ChatItem> chats) {
+    if (_locallyClearedAt.isEmpty) return chats;
+    return chats.map(_applyLocalClearGuard).toList(growable: false);
+  }
 
   /// 从服务器加载聊天列表
   Future<void> loadFromServer() async {
@@ -2627,9 +2823,13 @@ class ChatListNotifier extends StateNotifier<ChatListState> {
             )
             .where((chat) => seenIds.add(chat.id)) // 去重：只保留第一次出现的
             .toList();
-        final chats = mergeServerChatsWithLocalDrafts(
-          serverChats,
-          state.allChats,
+        final chats = _applyLocalClearGuards(
+          await _applyLocalGroupJoinMarkers(
+            mergeServerChatsWithLocalDrafts(
+              serverChats,
+              state.allChats,
+            ),
+          ),
         );
 
         final pinned = chats.where((c) => c.isPinned).toList();
@@ -2764,11 +2964,11 @@ class ChatListNotifier extends StateNotifier<ChatListState> {
   Future<void> silentRefresh({bool bypassDebounce = false}) async {
     if (_isDisposed) return;
 
-    // 防抖：500ms 内不重复请求
+    // 静默刷新防抖更长，避免前后台/WS 抖动时反复请求。
     final now = DateTime.now();
     if (!bypassDebounce &&
         _lastLoadTime != null &&
-        now.difference(_lastLoadTime!) < _minLoadInterval) {
+        now.difference(_lastLoadTime!) < _minSilentLoadInterval) {
       return;
     }
     _lastLoadTime = now;
@@ -2850,9 +3050,13 @@ class ChatListNotifier extends StateNotifier<ChatListState> {
             )
             .where((chat) => seenIds.add(chat.id))
             .toList();
-        final chats = mergeServerChatsWithLocalDrafts(
-          serverChats,
-          state.allChats,
+        final chats = _applyLocalClearGuards(
+          await _applyLocalGroupJoinMarkers(
+            mergeServerChatsWithLocalDrafts(
+              serverChats,
+              state.allChats,
+            ),
+          ),
         );
 
         final pinned = chats.where((c) => c.isPinned).toList();
@@ -3358,6 +3562,78 @@ class ChatListNotifier extends StateNotifier<ChatListState> {
     );
   }
 
+  /// 彻底清除聊天记录（自己侧）：
+  /// - 调服务端 `/clear`（写入 cleared_at，阻止旧消息回流）；[skipApi] 用于已清过服务端的场景
+  /// - 清内存窗口 / Isar / Web 缓存
+  /// - 会话仍保留在列表（不退群、不删好友、不 hide）
+  Future<bool> clearChatHistoryThoroughly(
+    String chatId, {
+    bool skipApi = false,
+  }) async {
+    if (_isDisposed || chatId.trim().isEmpty) return false;
+    final normalizedId = chatId.trim();
+    _clearTypingForChat(normalizedId);
+
+    if (!skipApi) {
+      try {
+        final response = await _chatService.clearChatHistory(normalizedId);
+        if (!response.isSuccess) {
+          debugPrint(
+            '[ChatProvider] clearChatHistory API failed: ${response.message}',
+          );
+          return false;
+        }
+      } catch (e) {
+        debugPrint('[ChatProvider] clearChatHistory API error: $e');
+        return false;
+      }
+    }
+
+    if (_isDisposed) return false;
+
+    // 守卫：后续列表刷新短暂带回旧预览时强制空态。
+    _markChatHistoryClearedLocally(normalizedId);
+
+    // 列表预览立刻清空，会话本身保留。
+    clearHistoryPreview(normalizedId);
+
+    final accountId = _getCurrentUserId() ?? '';
+    if (accountId.isNotEmpty) {
+      MessageMemoryWindowCache.remove(
+        accountId: accountId,
+        chatId: normalizedId,
+      );
+    }
+
+    // 清本地消息落库（保留 chatModels，避免会话从列表消失后又被误当成新会话）。
+    if (PlatformUtils.isWeb) {
+      if (accountId.isNotEmpty) {
+        try {
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.remove('message_window_${accountId}_$normalizedId');
+        } catch (e) {
+          debugPrint('[ChatProvider] clear web message window failed: $e');
+        }
+      }
+    } else if (IsarService.instance.isAvailable && accountId.isNotEmpty) {
+      try {
+        await IsarService.instance.isar.writeTxn(() async {
+          await IsarService.instance.isar.messageModels
+              .filter()
+              .accountIdEqualTo(accountId)
+              .chatIdEqualTo(normalizedId)
+              .deleteAll();
+        });
+      } catch (e) {
+        debugPrint('[ChatProvider] clear local messages failed: $e');
+      }
+    }
+
+    // 若会话页还在栈里，直接让消息 provider 重建为空态。
+    _ref.invalidate(messageListProvider(normalizedId));
+    return true;
+  }
+
   /// 更新聊天
   void updateChat(ChatItem updatedChat) {
     if (_isDisposed) return;
@@ -3414,11 +3690,18 @@ class ChatListNotifier extends StateNotifier<ChatListState> {
   }) {
     final chat = _findChatById(chatId);
     if (chat == null) return null;
+    if (isMemberMuteSystemMessage(message)) return null;
 
     final previewTime = DateTime.now();
+    // 本地有新消息预览时，解除「刚清除」守卫，允许列表正常展示。
+    _locallyClearedAt.remove(chatId);
+    final preview = _previewText(message, burnAfterRead: burnAfterRead);
+    if (!isGroupJoinPreviewText(preview) && preview.trim().isNotEmpty) {
+      unawaited(_clearGroupJoinMarker(chatId));
+    }
 
     final updatedChat = chat.copyWith(
-      lastMessage: _previewText(message, burnAfterRead: burnAfterRead),
+      lastMessage: preview,
       lastMessageTime: previewTime,
       lastMessageSender: _normalizePreviewSenderName(sender),
       lastMessageType: type,
@@ -3828,7 +4111,8 @@ class ChatListNotifier extends StateNotifier<ChatListState> {
       );
 
       if (!requiresApproval) {
-        // 直接加入成功，先获取聊天详情并添加到列表
+        // 直接加入成功：本地进群标记兜底 + 拉详情插入会话列表。
+        await markLocalGroupJoined(chatId);
         final chatResponse = await _chatService.getChat(chatId);
         if (chatResponse.isSuccess &&
             chatResponse.data != null &&
@@ -3852,8 +4136,9 @@ class ChatListNotifier extends StateNotifier<ChatListState> {
                       ? ChatItemType.group
                       : ChatItemType.channel,
               username: chat.username,
-              lastMessage: null,
+              lastMessage: _groupJoinPreviewLabel(),
               lastMessageTime: DateTime.now(),
+              lastMessageType: MessageContentType.text,
               unreadCount: 0,
               isPinned: false,
               isMuted: false,
@@ -3864,6 +4149,8 @@ class ChatListNotifier extends StateNotifier<ChatListState> {
               regularChats: [chatItem, ...state.regularChats],
             );
             debugPrint('[Chat] Added joined chat to list: ${chat.name}');
+          } else {
+            await markLocalGroupJoined(chatId);
           }
         }
         // 同时刷新列表确保数据同步
@@ -3924,6 +4211,20 @@ final chatMembersProvider = FutureProvider.family
     return response.data!;
   }
   return [];
+});
+
+/// 首屏成员预览，避免群信息抽屉触发全量成员请求。
+final chatMemberPreviewProvider = FutureProvider.family
+    .autoDispose<List<api.ChatMember>, String>((ref, chatId) async {
+  final currentUserId = ref.watch(currentAccountIdProvider);
+  if (currentUserId.isEmpty) return [];
+
+  final response = await ref.read(api.chatServiceProvider).getMembers(
+        chatId,
+        page: 1,
+        pageSize: 50,
+      );
+  return response.isSuccess ? (response.data ?? []) : [];
 });
 
 /// 当前用户禁言状态 Provider

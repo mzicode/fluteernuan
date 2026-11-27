@@ -157,7 +157,7 @@ class _TransactionListPageState extends ConsumerState<TransactionListPage> {
     );
   }
 
-  /// 获取交易类型对应的颜色
+  /// 获取交易类型对应的颜色（按类型区分，金额正负另看 amount）
   Color _getTransactionColor(TransactionType type) {
     switch (type) {
       case TransactionType.redPacketSend:
@@ -169,24 +169,36 @@ class _TransactionListPageState extends ConsumerState<TransactionListPage> {
       case TransactionType.recharge:
       case TransactionType.adminRecharge:
         return const Color(0xFF07C160);
+      case TransactionType.checkInReward:
+        return const Color(0xFFFAAD14);
       case TransactionType.withdraw:
-      case TransactionType.adminDeduct:
-      case TransactionType.vipPurchase:
         return const Color(0xFF4A90D9);
+      case TransactionType.adminDeduct:
+        return const Color(0xFF5C6BC0);
+      case TransactionType.vipPurchase:
+        return const Color(0xFF9B59B6);
       case TransactionType.refund:
-        return const Color(0xFF8E8E93);
+        return const Color(0xFF13C2C2);
       case TransactionType.rechargeRejected:
-        return Colors.red;
+        return const Color(0xFFF56C6C);
       case TransactionType.unknown:
         return const Color(0xFF8E8E93);
     }
   }
 
   Widget _buildTransactionItem(bool isDark, Transaction transaction) {
-    final isIncome = transaction.isIncome;
+    final amount = transaction.amount;
+    final isIncome = amount > 0;
     final icon = _getTransactionIcon(transaction.type);
     final typeLabel = _getTransactionTypeLabel(context, transaction.type);
     final typeColor = _getTransactionColor(transaction.type);
+    final amountText = amount > 0
+        ? '+${amount.toStringAsFixed(2)}'
+        : amount.toStringAsFixed(2);
+    // 提现 / 签到奖励：只显示主标题，不渲染 remark（如「连续签到7天奖励」）
+    final showRemark = !transaction.type.hideRemarkSubtitle &&
+        transaction.remark != null &&
+        transaction.remark!.isNotEmpty;
 
     return Container(
       margin: const EdgeInsets.only(bottom: 1),
@@ -196,7 +208,7 @@ class _TransactionListPageState extends ConsumerState<TransactionListPage> {
       ),
       child: Row(
         children: [
-          // 彩色图标
+          // 彩色图标（前端按 type 映射，非接口下发）
           Container(
             width: 40,
             height: 40,
@@ -222,8 +234,7 @@ class _TransactionListPageState extends ConsumerState<TransactionListPage> {
                     color: isDark ? Colors.white : const Color(0xFF1D1D1F),
                   ),
                 ),
-                if (transaction.remark != null &&
-                    transaction.remark!.isNotEmpty) ...[
+                if (showRemark) ...[
                   const SizedBox(height: 2),
                   Text(
                     transaction.remark!,
@@ -244,7 +255,7 @@ class _TransactionListPageState extends ConsumerState<TransactionListPage> {
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
               Text(
-                '${isIncome ? '+' : ''}${transaction.amount.toStringAsFixed(2)}',
+                amountText,
                 style: TextStyle(
                   fontSize: 16,
                   fontWeight: FontWeight.w600,
@@ -255,7 +266,7 @@ class _TransactionListPageState extends ConsumerState<TransactionListPage> {
               ),
               const SizedBox(height: 2),
               Text(
-                _formatTime(context, transaction.createdAt),
+                _formatBeijingTime(context, transaction.createdAt),
                 style: TextStyle(
                   fontSize: 11,
                   color: AppColors.textTertiaryFor(context),
@@ -271,14 +282,19 @@ class _TransactionListPageState extends ConsumerState<TransactionListPage> {
   IconData _getTransactionIcon(TransactionType type) {
     switch (type) {
       case TransactionType.recharge:
+        return Icons.account_balance_wallet_outlined;
       case TransactionType.adminRecharge:
         return Icons.add_circle_outline;
+      case TransactionType.checkInReward:
+        return Icons.event_available_outlined;
       case TransactionType.withdraw:
+        return Icons.payments_outlined;
       case TransactionType.adminDeduct:
-      case TransactionType.vipPurchase:
         return Icons.remove_circle_outline;
+      case TransactionType.vipPurchase:
+        return Icons.workspace_premium_outlined;
       case TransactionType.redPacketSend:
-        return Icons.redeem;
+        return Icons.card_giftcard_outlined;
       case TransactionType.redPacketReceive:
         return Icons.redeem;
       case TransactionType.transferOut:
@@ -286,11 +302,12 @@ class _TransactionListPageState extends ConsumerState<TransactionListPage> {
       case TransactionType.transferIn:
         return Icons.call_received_rounded;
       case TransactionType.refund:
-        return Icons.replay;
+        // 退款：货币兑换/回退语义，区别于普通重播箭头
+        return Icons.currency_exchange;
       case TransactionType.rechargeRejected:
         return Icons.cancel_outlined;
       case TransactionType.unknown:
-        return Icons.help_outline;
+        return Icons.receipt_long_outlined;
     }
   }
 
@@ -304,60 +321,52 @@ class _TransactionListPageState extends ConsumerState<TransactionListPage> {
             zhCN: '提现', zhTW: '提現', en: 'Withdraw');
       case TransactionType.transferOut:
         return _transactionText(context,
-            zhCN: '转账-转出', zhTW: '轉帳-轉出', en: 'Transfer Out');
+            zhCN: '转账转出', zhTW: '轉帳轉出', en: 'Transfer Out');
       case TransactionType.transferIn:
         return _transactionText(context,
-            zhCN: '转账-转入', zhTW: '轉帳-轉入', en: 'Transfer In');
+            zhCN: '转账转入', zhTW: '轉帳轉入', en: 'Transfer In');
       case TransactionType.redPacketSend:
         return _transactionText(context,
             zhCN: '发出红包', zhTW: '發出紅包', en: 'Sent Red Packet');
       case TransactionType.redPacketReceive:
         return _transactionText(context,
-            zhCN: '收到红包', zhTW: '收到紅包', en: 'Received Red Packet');
+            zhCN: '领取红包', zhTW: '領取紅包', en: 'Received Red Packet');
       case TransactionType.refund:
         return _transactionText(context, zhCN: '退款', zhTW: '退款', en: 'Refund');
       case TransactionType.adminRecharge:
         return _transactionText(context,
-            zhCN: '系统充值', zhTW: '系統充值', en: 'System Recharge');
+            zhCN: '后台充值', zhTW: '後台儲值', en: 'Admin Recharge');
       case TransactionType.adminDeduct:
         return _transactionText(context,
-            zhCN: '系统扣减', zhTW: '系統扣減', en: 'System Deduction');
+            zhCN: '后台扣款', zhTW: '後台扣款', en: 'Admin Deduction');
       case TransactionType.rechargeRejected:
         return _transactionText(context,
             zhCN: '充值被拒绝', zhTW: '充值被拒絕', en: 'Recharge Rejected');
       case TransactionType.vipPurchase:
         return _transactionText(context,
-            zhCN: '购买会员', zhTW: '購買會員', en: 'VIP Purchase');
+            zhCN: '会员购买', zhTW: '會員購買', en: 'VIP Purchase');
+      case TransactionType.checkInReward:
+        return _transactionText(context,
+            zhCN: '签到奖励', zhTW: '簽到獎勵', en: 'Check-in Reward');
       case TransactionType.unknown:
         return _transactionText(context,
-            zhCN: '未知类型', zhTW: '未知類型', en: 'Unknown Type');
+            zhCN: '交易记录', zhTW: '交易記錄', en: 'Transaction');
     }
   }
 
-  String _formatTime(BuildContext context, DateTime time) {
-    final now = DateTime.now();
-    final diff = now.difference(time);
-
-    if (diff.inDays == 0) {
-      return '${time.hour.toString().padLeft(2, '0')}:${time.minute.toString().padLeft(2, '0')}';
-    } else if (diff.inDays == 1) {
+  /// 固定 Asia/Shanghai（UTC+8，无夏令时）完整时间，不受手机时区影响。
+  String _formatBeijingTime(BuildContext context, DateTime? time) {
+    if (time == null) {
       return _transactionText(
         context,
-        zhCN:
-            '昨天 ${time.hour.toString().padLeft(2, '0')}:${time.minute.toString().padLeft(2, '0')}',
-        zhTW:
-            '昨天 ${time.hour.toString().padLeft(2, '0')}:${time.minute.toString().padLeft(2, '0')}',
-        en: 'Yesterday ${time.hour.toString().padLeft(2, '0')}:${time.minute.toString().padLeft(2, '0')}',
+        zhCN: '未知时间',
+        zhTW: '未知時間',
+        en: 'Unknown time',
       );
-    } else if (diff.inDays < 7) {
-      return _transactionText(
-        context,
-        zhCN: '${diff.inDays}天前',
-        zhTW: '${diff.inDays}天前',
-        en: '${diff.inDays} day(s) ago',
-      );
-    } else {
-      return '${time.month}/${time.day}';
     }
+    final shanghai = time.toUtc().add(const Duration(hours: 8));
+    String two(int n) => n.toString().padLeft(2, '0');
+    return '${shanghai.year}-${two(shanghai.month)}-${two(shanghai.day)} '
+        '${two(shanghai.hour)}:${two(shanghai.minute)}:${two(shanghai.second)}';
   }
 }

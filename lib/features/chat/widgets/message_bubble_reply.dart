@@ -11,6 +11,7 @@ extension _MessageBubbleReplyPreview on MessageBubble {
         : AppColors.primaryFor(context);
 
     return GestureDetector(
+      behavior: HitTestBehavior.opaque,
       onTap: onReplyTap,
       child: Container(
         margin: const EdgeInsets.only(bottom: 6),
@@ -43,7 +44,10 @@ extension _MessageBubbleReplyPreview on MessageBubble {
                       ),
                       const SizedBox(height: 1),
                       Text(
-                        message.replyTo!.content,
+                        resolveReplyPreviewText(
+                          content: message.replyTo!.content,
+                          contentType: message.replyTo!.contentType,
+                        ),
                         style: TextStyle(
                           fontSize:
                               (messageFontSize - 2).clamp(12, 18).toDouble(),

@@ -25,10 +25,11 @@ class AudioplayersOutgoingCallToneBackend implements OutgoingCallToneBackend {
     String assetPath, {
     required double volume,
   }) async {
-    // 回铃音必须与 Agora 保持相同的 Android 音频模式。部分华为设备会在 RTC
-    // 启动时主动重配路由，若使用 normal 模式或单独请求焦点，声音可能瞬间消失。
-    // ringtone usage 避免媒体音量衰减，AUDIOFOCUS_NONE 则让 Agora 继续持有
-    // VoIP 音频会话。
+    // Ringback must stay audible on Samsung One UI while RTC is already in
+    // MODE_IN_COMMUNICATION. USAGE_NOTIFICATION_RINGTONE + AUDIOFOCUS_NONE is
+    // often silenced there; VOICE_COMMUNICATION_SIGNALLING is the telephony
+    // ringback usage and survives in-communication sessions. Transient ducking
+    // focus still lets NERTC/Agora keep the VoIP path.
     await _player.setAudioContext(
       const AudioContext(
         android: AudioContextAndroid(
@@ -36,8 +37,8 @@ class AudioplayersOutgoingCallToneBackend implements OutgoingCallToneBackend {
           audioMode: AndroidAudioMode.inCommunication,
           stayAwake: true,
           contentType: AndroidContentType.sonification,
-          usageType: AndroidUsageType.notificationRingtone,
-          audioFocus: AndroidAudioFocus.none,
+          usageType: AndroidUsageType.voiceCommunicationSignalling,
+          audioFocus: AndroidAudioFocus.gainTransientMayDuck,
         ),
         iOS: AudioContextIOS(
           category: AVAudioSessionCategory.playback,
@@ -73,7 +74,7 @@ class OutgoingCallToneService {
       : _backend = backend ?? AudioplayersOutgoingCallToneBackend();
 
   static const String _assetPath = 'sounds/ringtone.mp3';
-  static const double _volume = 0.85;
+  static const double _volume = 1.0;
 
   final OutgoingCallToneBackend _backend;
   // 队列保证底层 AudioPlayer 不会被并发调用。

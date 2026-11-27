@@ -1,5 +1,7 @@
 // 文件用途：实现 _ProfileShareTarget 页面及其交互流程，属于聊天与消息。
 // 核心逻辑：维护 _ProfileShareTarget 页面状态，响应用户操作并调用 Provider/Service；同时处理加载、成功、失败和返回导航。
+import 'dart:async';
+
 import 'package:universal_io/io.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
@@ -212,6 +214,11 @@ class UserProfilePage extends ConsumerStatefulWidget {
 class _UserProfilePageState extends ConsumerState<UserProfilePage> {
   bool _isLoading = false;
   bool _isContact = false;
+  /// 服务端好友关系：仅 friends 时展示聊天/语音/视频
+  bool _isFriend = false;
+  bool _loadingRelationship = true;
+  String? _relationshipStatus;
+  int _relationshipRequestId = 0;
   List<Map<String, dynamic>> _commonGroups = [];
   bool _loadingGroups = true;
   int _commonGroupCount = 0;
@@ -258,6 +265,7 @@ class _UserProfilePageState extends ConsumerState<UserProfilePage> {
       ref.read(contactListProvider.notifier).silentRefresh();
     });
     _loadUserInfo();
+    _loadRelationship();
     _loadBlockStatus();
     _setupUserStatusListener();
     _setupUserProfileListener();
@@ -574,18 +582,131 @@ class _UserProfilePageState extends ConsumerState<UserProfilePage> {
     }
   }
 
-  void _checkIsContact() {
-    final contacts = ref.read(contactListProvider);
-    ContactItem? matchedContact;
-    for (final contact in contacts) {
-      if (contact.id == widget.userId || contact.uuid == widget.userId) {
-        matchedContact = contact;
-        break;
-      }
+  /// 目标用户可能的 id / uuid（打开资料页时入口字段不统一）
+  Set<String> get _targetIdentityKeys {
+    final keys = <String>{
+      widget.userId.trim(),
+      if (_userUuid != null) _userUuid!.trim(),
+      if (_userId != null) _userId!.trim(),
+    }..removeWhere((value) => value.isEmpty);
+    return keys;
+  }
+
+  bool _contactMatchesTarget(ContactItem contact) {
+    final keys = _targetIdentityKeys;
+    if (keys.isEmpty) return false;
+    final id = contact.id.trim();
+    final uuid = contact.uuid?.trim() ?? '';
+    return (id.isNotEmpty && keys.contains(id)) ||
+        (uuid.isNotEmpty && keys.contains(uuid));
+  }
+
+  ContactItem? _findMatchedContact([List<ContactItem>? contacts]) {
+    final list = contacts ?? ref.read(contactListProvider);
+    if (list == null) return null;
+    for (final contact in list) {
+      if (_contactMatchesTarget(contact)) return contact;
     }
+    return null;
+  }
+
+  /// 聊天/语音/视频：服务端好友 或 本地通讯录命中（二者任一即可）
+  bool get _canStartConversation {
+    if (_isCurrentUser) return false;
+    if (_relationshipStatus == ContactRelationship.statusSelf) return false;
+    return _isFriend || _isContact;
+  }
+
+  static final RegExp _uuidPattern = RegExp(
+    r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$',
+  );
+
+  bool _looksLikeUuid(String value) => _uuidPattern.hasMatch(value.trim());
+
+  void _checkIsContact() {
+    final matchedContact = _findMatchedContact();
     setState(() {
       _isContact = matchedContact != null;
       _contactRemark = matchedContact?.remark;
+      // 本地通讯录即好友；接口返回前先按联系人展示入口，避免误藏
+      if (_isContact && _loadingRelationship) {
+        _isFriend = true;
+      }
+    });
+  }
+
+  /// 查询与目标用户的好友关系（决定是否展示聊天/语音/视频）
+  Future<void> _loadRelationship() async {
+    final requestId = ++_relationshipRequestId;
+    if (_isCurrentUser) {
+      if (!mounted || requestId != _relationshipRequestId) return;
+      setState(() {
+        _isFriend = false;
+        _isContact = false;
+        _relationshipStatus = ContactRelationship.statusSelf;
+        _loadingRelationship = false;
+      });
+      return;
+    }
+
+    // 接口要求 UUID；数字 id 先等用户详情，避免 400 把好友误判成非好友
+    final preferredUuid = (_userUuid ?? '').trim();
+    final fallbackId = widget.userId.trim();
+    final userUuid = preferredUuid.isNotEmpty
+        ? preferredUuid
+        : (_looksLikeUuid(fallbackId) ? fallbackId : '');
+    if (userUuid.isEmpty) {
+      if (!mounted || requestId != _relationshipRequestId) return;
+      // 尚无 UUID 时保留本地联系人推断，不强制清成非好友
+      setState(() {
+        if (!_isContact) {
+          _isFriend = false;
+          _relationshipStatus = null;
+        }
+        _loadingRelationship = _isContact ? false : true;
+      });
+      return;
+    }
+
+    if (mounted) {
+      setState(() => _loadingRelationship = true);
+    }
+
+    try {
+      final relationship = await ref
+          .read(contactListProvider.notifier)
+          .fetchRelationship(userUuid);
+      if (!mounted || requestId != _relationshipRequestId) return;
+      final fromApi = relationship?.canStartConversation == true;
+      setState(() {
+        // 本地通讯录与接口取并集，避免列表刷新瞬间把好友入口清掉
+        _isFriend = fromApi || _isContact;
+        _relationshipStatus = relationship?.relationshipStatus ??
+            (_isContact
+                ? ContactRelationship.statusFriends
+                : ContactRelationship.statusNone);
+        _loadingRelationship = false;
+      });
+    } catch (_) {
+      if (!mounted || requestId != _relationshipRequestId) return;
+      setState(() {
+        // 请求失败时仍信任本地通讯录
+        _isFriend = _isContact;
+        _relationshipStatus = _isContact
+            ? ContactRelationship.statusFriends
+            : null;
+        _loadingRelationship = false;
+      });
+    }
+  }
+
+  void _applyRelationshipAsFriend({required bool isFriend}) {
+    setState(() {
+      _isFriend = isFriend;
+      _relationshipStatus = isFriend
+          ? ContactRelationship.statusFriends
+          : ContactRelationship.statusNone;
+      _loadingRelationship = false;
     });
   }
 
@@ -601,13 +722,7 @@ class _UserProfilePageState extends ConsumerState<UserProfilePage> {
           avatarUrl = ApiConfig.getMediaUrl(avatarUrl);
         }
 
-        ContactItem? matchedContact;
-        for (final contact in ref.read(contactListProvider)) {
-          if (contact.id == widget.userId || contact.uuid == widget.userId) {
-            matchedContact = contact;
-            break;
-          }
-        }
+        final matchedContact = _findMatchedContact();
         final inferredRemark = matchedContact != null &&
                 (matchedContact.remark?.trim().isNotEmpty != true) &&
                 matchedContact.name.trim().isNotEmpty &&
@@ -631,6 +746,13 @@ class _UserProfilePageState extends ConsumerState<UserProfilePage> {
               matchedContact?.uuid ??
               widget.userId;
           _contactRemark = inferredRemark;
+          // 详情拿到 id/uuid 后再对齐一次本地通讯录
+          final resolvedMatch = _findMatchedContact();
+          _isContact = resolvedMatch != null;
+          if (_isContact) {
+            _isFriend = true;
+            _contactRemark = inferredRemark ?? resolvedMatch?.remark;
+          }
           _isOnline = response.data['status'] == 1;
           if (response.data['last_seen'] != null) {
             _lastSeen = DateTime.tryParse(
@@ -639,6 +761,8 @@ class _UserProfilePageState extends ConsumerState<UserProfilePage> {
           }
           _loadingUserInfo = false;
         });
+        // 用户详情拿到准确 UUID 后再核对一次好友关系
+        unawaited(_loadRelationship());
       } else {
         setState(() => _loadingUserInfo = false);
       }
@@ -913,19 +1037,18 @@ class _UserProfilePageState extends ConsumerState<UserProfilePage> {
     final separatorColor = AppColors.dividerFor(context);
     // 监听联系人列表变化
     ref.listen(contactListProvider, (_, contacts) {
-      ContactItem? matchedContact;
-      for (final contact in contacts) {
-        if (contact.id == widget.userId || contact.uuid == widget.userId) {
-          matchedContact = contact;
-          break;
-        }
-      }
+      final matchedContact = _findMatchedContact(contacts);
       if (matchedContact == null) {
         if (_isContact || _contactRemark != null) {
           setState(() {
             _isContact = false;
             _contactRemark = null;
+            // 不在这里强行把 _isFriend 清掉：列表刷新/id 对不上时会误伤真实好友。
+            // 以关系接口复核后再决定是否隐藏入口。
           });
+          if (!_loadingRelationship) {
+            unawaited(_loadRelationship());
+          }
         }
         return;
       }
@@ -940,6 +1063,7 @@ class _UserProfilePageState extends ConsumerState<UserProfilePage> {
           nextRemark?.trim().isNotEmpty == true ? _realNickname : nextName;
 
       if (_isContact &&
+          _isFriend &&
           _realNickname == nextNickname &&
           _realAvatar == nextAvatar &&
           _nicknameColor == nextNicknameColor &&
@@ -951,6 +1075,12 @@ class _UserProfilePageState extends ConsumerState<UserProfilePage> {
 
       setState(() {
         _isContact = true;
+        // 通讯录命中视为好友，避免接口慢/失败时入口被藏、或与「联系人」文案打架
+        _isFriend = true;
+        if (_relationshipStatus == null ||
+            _relationshipStatus == ContactRelationship.statusNone) {
+          _relationshipStatus = ContactRelationship.statusFriends;
+        }
         _realNickname = nextNickname;
         _realAvatar = nextAvatar;
         _nicknameColor = nextNicknameColor;
@@ -1215,7 +1345,7 @@ class _UserProfilePageState extends ConsumerState<UserProfilePage> {
                           },
                         ),
                         const Spacer(),
-                        // 操作按钮（不显示给自己）
+                        // 操作按钮（不显示给自己；聊天/语音/视频仅好友可见）
                         if (!_isCurrentUser)
                           Padding(
                             padding: EdgeInsets.fromLTRB(
@@ -1226,57 +1356,59 @@ class _UserProfilePageState extends ConsumerState<UserProfilePage> {
                             ),
                             child: Row(
                               children: [
-                                Expanded(
-                                  child: _TGActionButton(
-                                    icon: Icons.chat_bubble_outline,
-                                    label: l10n.get('message') ??
-                                        _userProfileText(
-                                          context,
-                                          zhCN: '消息',
-                                          zhTW: '訊息',
-                                          en: 'Message',
-                                        ),
-                                    onTap: () => _startChat(context),
-                                    isLoading: _isLoading,
-                                    lightStyle: true,
-                                    foregroundColor: headerForeground,
-                                    buttonSize: actionButtonSize,
+                                if (_canStartConversation) ...[
+                                  Expanded(
+                                    child: _TGActionButton(
+                                      icon: Icons.chat_bubble_outline,
+                                      label: l10n.get('message') ??
+                                          _userProfileText(
+                                            context,
+                                            zhCN: '消息',
+                                            zhTW: '訊息',
+                                            en: 'Message',
+                                          ),
+                                      onTap: () => _startChat(context),
+                                      isLoading: _isLoading,
+                                      lightStyle: true,
+                                      foregroundColor: headerForeground,
+                                      buttonSize: actionButtonSize,
+                                    ),
                                   ),
-                                ),
-                                Expanded(
-                                  child: _TGActionButton(
-                                    icon: Icons.call_outlined,
-                                    label: l10n.get('call') ??
-                                        _userProfileText(
-                                          context,
-                                          zhCN: '通话',
-                                          zhTW: '通話',
-                                          en: 'Call',
-                                        ),
-                                    onTap: () =>
-                                        _startCall(context, CallType.voice),
-                                    lightStyle: true,
-                                    foregroundColor: headerForeground,
-                                    buttonSize: actionButtonSize,
+                                  Expanded(
+                                    child: _TGActionButton(
+                                      icon: Icons.call_outlined,
+                                      label: l10n.get('call') ??
+                                          _userProfileText(
+                                            context,
+                                            zhCN: '通话',
+                                            zhTW: '通話',
+                                            en: 'Call',
+                                          ),
+                                      onTap: () =>
+                                          _startCall(context, CallType.voice),
+                                      lightStyle: true,
+                                      foregroundColor: headerForeground,
+                                      buttonSize: actionButtonSize,
+                                    ),
                                   ),
-                                ),
-                                Expanded(
-                                  child: _TGActionButton(
-                                    icon: Icons.videocam_outlined,
-                                    label: l10n.get('video') ??
-                                        _userProfileText(
-                                          context,
-                                          zhCN: '视频',
-                                          zhTW: '影片',
-                                          en: 'Video',
-                                        ),
-                                    onTap: () =>
-                                        _startCall(context, CallType.video),
-                                    lightStyle: true,
-                                    foregroundColor: headerForeground,
-                                    buttonSize: actionButtonSize,
+                                  Expanded(
+                                    child: _TGActionButton(
+                                      icon: Icons.videocam_outlined,
+                                      label: l10n.get('video') ??
+                                          _userProfileText(
+                                            context,
+                                            zhCN: '视频',
+                                            zhTW: '影片',
+                                            en: 'Video',
+                                          ),
+                                      onTap: () =>
+                                          _startCall(context, CallType.video),
+                                      lightStyle: true,
+                                      foregroundColor: headerForeground,
+                                      buttonSize: actionButtonSize,
+                                    ),
                                   ),
-                                ),
+                                ],
                                 Expanded(
                                   child: _TGActionButton(
                                     icon: Icons.search_rounded,
@@ -1518,40 +1650,6 @@ class _UserProfilePageState extends ConsumerState<UserProfilePage> {
                         onTap: () => _showClearChatDialog(context),
                       ),
                       _TGCell(
-                        icon: _isBlocked
-                            ? Icons.lock_open_outlined
-                            : Icons.block_outlined,
-                        iconColor: _isBlocked ? Colors.orange : Colors.red,
-                        title: _isBlocked
-                            ? (l10n.get('unblock_user') ??
-                                _userProfileText(
-                                  context,
-                                  zhCN: '取消屏蔽',
-                                  zhTW: '取消封鎖',
-                                  en: 'Unblock User',
-                                ))
-                            : (l10n.get('block_user') ??
-                                _userProfileText(
-                                  context,
-                                  zhCN: '屏蔽用户',
-                                  zhTW: '封鎖用戶',
-                                  en: 'Block User',
-                                )),
-                        titleColor: _isBlocked ? Colors.orange : Colors.red,
-                        trailing: _loadingBlockStatus
-                            ? SizedBox(
-                                width: 16,
-                                height: 16,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                ),
-                              )
-                            : null,
-                        onTap: _loadingBlockStatus
-                            ? null
-                            : () => _toggleBlock(context),
-                      ),
-                      _TGCell(
                         icon: Icons.report_gmailerrorred_outlined,
                         iconColor: Colors.red,
                         title: l10n.get('report') ??
@@ -1660,6 +1758,7 @@ class _UserProfilePageState extends ConsumerState<UserProfilePage> {
   }
 
   void _startChat(BuildContext context) async {
+    if (!_canStartConversation) return;
     // 桌面端：如果已经在聊天页面了，只需关闭资料面板
     if (widget.isDesktopPanel && widget.chatId != null) {
       ref.read(desktopProfileProvider.notifier).state = DesktopProfileInfo.none;
@@ -1700,6 +1799,7 @@ class _UserProfilePageState extends ConsumerState<UserProfilePage> {
 
   /// 直接发起通话（无需先跳转聊天页）
   void _startCall(BuildContext context, CallType callType) {
+    if (!_canStartConversation) return;
     if (_isBlocked) {
       if (mounted) {
         ScaffoldMessenger.of(
@@ -2107,6 +2207,7 @@ class _UserProfilePageState extends ConsumerState<UserProfilePage> {
           _isContact = false;
           _contactRemark = null;
         });
+        _applyRelationshipAsFriend(isFriend: false);
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
@@ -2175,6 +2276,7 @@ class _UserProfilePageState extends ConsumerState<UserProfilePage> {
             _isContact = true;
             _contactRemark = null;
           });
+          _applyRelationshipAsFriend(isFriend: true);
         }
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -2268,6 +2370,14 @@ class _UserProfilePageState extends ConsumerState<UserProfilePage> {
           setState(() {
             _isContact = true;
             _contactRemark = null;
+          });
+          _applyRelationshipAsFriend(isFriend: true);
+        } else if (result.created) {
+          setState(() {
+            _isFriend = false;
+            _relationshipStatus =
+                ContactRelationship.statusPendingOutgoing;
+            _loadingRelationship = false;
           });
         }
         ScaffoldMessenger.of(context).showSnackBar(
@@ -2991,26 +3101,22 @@ class _UserProfilePageState extends ConsumerState<UserProfilePage> {
           ),
           {'name': _fallbackThisUserName(context, widget.name)},
         ),
-        message: _translate(
+        message: _userProfileText(
           context,
-          'cannot_undo',
-          _userProfileText(
-            context,
-            zhCN: '此操作无法撤销',
-            zhTW: '此操作無法復原',
-            en: 'This action cannot be undone',
-          ),
+          zhCN: '仅清空你自己的聊天记录，对方不受影响。此操作无法撤销。',
+          zhTW: '僅清空你自己的聊天記錄，對方不受影響。此操作無法復原。',
+          en: 'This only clears your own chat history. The other person is not affected. This cannot be undone.',
         ),
         actions: [
           _TGActionSheetItem(
             title: _translate(
               context,
-              'clear_for_me_only',
+              'clear_chat_history',
               _userProfileText(
                 context,
-                zhCN: '仅为我清空',
-                zhTW: '僅為我清空',
-                en: 'Clear for Me',
+                zhCN: '清空聊天记录',
+                zhTW: '清空聊天記錄',
+                en: 'Clear Chat History',
               ),
             ),
             isDestructive: true,
@@ -3019,34 +3125,16 @@ class _UserProfilePageState extends ConsumerState<UserProfilePage> {
               await _clearChatHistory();
             },
           ),
-          _TGActionSheetItem(
-            title: _translate(
-              context,
-              'clear_for_both',
-              _userProfileText(
-                context,
-                zhCN: '为双方清空',
-                zhTW: '為雙方清空',
-                en: 'Clear for Both',
-              ),
-            ),
-            isDestructive: true,
-            onTap: () async {
-              Navigator.pop(context);
-              await _clearChatHistory(forBoth: true);
-            },
-          ),
         ],
         cancelText: l10n.cancel,
       ),
     );
   }
 
-  /// 清空聊天记录
-  Future<void> _clearChatHistory({bool forBoth = false}) async {
+  /// 清空自己的聊天记录（不影响对方）
+  Future<void> _clearChatHistory() async {
     try {
       final apiClient = ref.read(apiClientProvider);
-      final chatService = ref.read(api.chatServiceProvider);
 
       // 首先获取或创建私聊
       final userUuid = _userUuid ?? widget.userId;
@@ -3081,55 +3169,37 @@ class _UserProfilePageState extends ConsumerState<UserProfilePage> {
           return;
         }
 
-        // 调用清空聊天记录 API
-        final clearResponse = forBoth
-            ? await chatService.clearChatHistoryForBoth(chatId.toString())
-            : await chatService.clearChatHistory(chatId.toString());
+        final ok = await ref
+            .read(chatListProvider.notifier)
+            .clearChatHistoryThoroughly(chatId.toString());
 
-        if (clearResponse.isSuccess && mounted) {
-          ref
-              .read(chatListProvider.notifier)
-              .clearHistoryPreview(chatId.toString());
-          // 刷新当前会话消息缓存（若会话页仍在栈中可立即生效）
-          ref.invalidate(messageListProvider(chatId.toString()));
-          // 刷新聊天列表
-          ref.read(chatListProvider.notifier).refresh();
+        if (!mounted) return;
 
+        if (ok) {
           ScaffoldMessenger.of(
             context,
           ).showSnackBar(
             SnackBar(
               content: Text(
-                forBoth
-                    ? _translate(
-                        context,
-                        'chat_history_cleared_for_both',
-                        _userProfileText(
-                          context,
-                          zhCN: '已为双方清空聊天记录',
-                          zhTW: '已為雙方清空聊天記錄',
-                          en: 'Chat history cleared for both sides',
-                        ),
-                      )
-                    : _translate(
-                        context,
-                        'chat_history_cleared',
-                        _userProfileText(
-                          context,
-                          zhCN: '聊天记录已清空',
-                          zhTW: '聊天記錄已清空',
-                          en: 'Chat history cleared',
-                        ),
-                      ),
+                _translate(
+                  context,
+                  'chat_history_cleared',
+                  _userProfileText(
+                    context,
+                    zhCN: '聊天记录已清空',
+                    zhTW: '聊天記錄已清空',
+                    en: 'Chat history cleared',
+                  ),
+                ),
               ),
             ),
           );
-        } else if (mounted) {
+        } else {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
               content: Text(
-                _userProfileServerMessage(
-                  clearResponse.message,
+                _userProfileText(
+                  context,
                   zhCN: '清空失败',
                   zhTW: '清空失敗',
                   en: 'Clear failed',

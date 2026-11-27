@@ -25,8 +25,9 @@ class AudioplayersIncomingCallToneBackend implements IncomingCallToneBackend {
     String assetPath, {
     required double volume,
   }) async {
-    // 与 RTC 使用同一种通话音频模式，避免部分 Android 机型从铃声模式
-    // 切换到通话模式时遗留旧播放器或错误输出路由。
+    // Same Samsung One UI issue as outgoing ringback: notification-ringtone
+    // usage is muted under MODE_IN_COMMUNICATION. Use signalling usage + a
+    // short ducking focus so in-app incoming tone actually reaches the speaker.
     await _player.setAudioContext(
       const AudioContext(
         android: AudioContextAndroid(
@@ -34,8 +35,8 @@ class AudioplayersIncomingCallToneBackend implements IncomingCallToneBackend {
           audioMode: AndroidAudioMode.inCommunication,
           stayAwake: true,
           contentType: AndroidContentType.sonification,
-          usageType: AndroidUsageType.notificationRingtone,
-          audioFocus: AndroidAudioFocus.none,
+          usageType: AndroidUsageType.voiceCommunicationSignalling,
+          audioFocus: AndroidAudioFocus.gainTransientMayDuck,
         ),
         iOS: AudioContextIOS(
           category: AVAudioSessionCategory.playback,
@@ -69,7 +70,7 @@ class IncomingCallToneService {
       : _backend = backend ?? AudioplayersIncomingCallToneBackend();
 
   static const String _assetPath = 'sounds/ringtone.mp3';
-  static const double _volume = 0.72;
+  static const double _volume = 0.95;
 
   final IncomingCallToneBackend _backend;
   // 所有底层调用串联到同一队列，保证播放器按请求顺序被操作。

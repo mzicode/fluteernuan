@@ -356,14 +356,15 @@ class _GroupEditPageState extends ConsumerState<GroupEditPage> {
                 canUsePublicSettings: canUsePublicSettings,
               ),
 
-              const SizedBox(height: 24),
-
-              // 链接设置
-              _buildLinkSection(
-                isDark,
-                isChannel,
-                canUsePublicSettings: canUsePublicSettings,
-              ),
+              // 群组号/频道号输入：群组侧暂时隐藏；频道仍保留
+              if (isChannel) ...[
+                const SizedBox(height: 24),
+                _buildLinkSection(
+                  isDark,
+                  isChannel,
+                  canUsePublicSettings: canUsePublicSettings,
+                ),
+              ],
 
               const SizedBox(height: 24),
 
@@ -1663,6 +1664,7 @@ class _GroupEditPageState extends ConsumerState<GroupEditPage> {
 
         // 本地列表只更新基础展示字段，完整权限和公开配置重新从详情接口获取。
         ref.invalidate(chatDetailProvider(widget.chatId));
+        ref.invalidate(chatMembersProvider(widget.chatId));
 
         HapticFeedback.mediumImpact();
         if (mounted) {

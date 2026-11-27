@@ -201,7 +201,7 @@ class IOSComplianceSettings {
   const IOSComplianceSettings({
     this.enabled = true,
     this.vipEnabled = false,
-    this.walletEnabled = false,
+    this.walletEnabled = true,
     this.walletRechargeEnabled = false,
     this.momentVideoEnabled = false,
     this.customPortalEnabled = false,
@@ -210,7 +210,7 @@ class IOSComplianceSettings {
   factory IOSComplianceSettings.fromJson(dynamic raw) {
     if (raw is! Map) return const IOSComplianceSettings();
     final json = Map<String, dynamic>.from(raw);
-    final walletEnabled = json['wallet_enabled'] == true;
+    final walletEnabled = json['wallet_enabled'] != false;
     return IOSComplianceSettings(
       enabled: json['enabled'] != false,
       vipEnabled: json['vip_enabled'] == true,

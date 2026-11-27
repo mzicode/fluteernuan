@@ -33,13 +33,15 @@ import '../../../shared/widgets/avatar_widget.dart';
 import '../../../shared/widgets/page_transitions.dart';
 import '../../../shared/widgets/colored_name_widget.dart';
 import '../../../shared/widgets/emoji_status_widget.dart';
+import '../../../shared/widgets/official_badge.dart';
 import '../../../core/services/api/api_client.dart';
 import '../../../core/services/api/auth_service.dart';
 import '../../../core/services/api/chat_service.dart' as api;
 import '../../../core/services/api/websocket_service.dart';
 import '../../../core/services/upload_service.dart';
 import '../providers/chat_provider.dart';
-import '../../contacts/providers/contact_provider.dart';
+import '../providers/message_provider.dart';
+import '../widgets/group_invite_friends_sheet.dart';
 import '../../vip/widgets/vip_badge.dart';
 import 'message_search_page.dart';
 import 'report_page.dart';
@@ -253,6 +255,13 @@ class GroupProfilePage extends ConsumerStatefulWidget {
 class _GroupProfilePageState extends ConsumerState<GroupProfilePage> {
   api.ChatMediaCounts? _mediaCounts;
   api.Chat? _lastChatDetail;
+  static const _memberPageSize = 50;
+  final List<api.ChatMember> _pagedMembers = [];
+  int _memberPage = 0;
+  bool _membersLoading = true;
+  bool _membersLoadingMore = false;
+  bool _membersHasMore = true;
+  int _memberRequestId = 0;
   final TextEditingController _memberSearchController = TextEditingController();
   bool _showMemberSearch = false;
   String _memberSearchQuery = '';
@@ -263,6 +272,7 @@ class _GroupProfilePageState extends ConsumerState<GroupProfilePage> {
   void initState() {
     super.initState();
     _loadMediaCounts();
+    _loadMembers(reset: true);
   }
 
   @override
@@ -286,22 +296,161 @@ class _GroupProfilePageState extends ConsumerState<GroupProfilePage> {
     }
   }
 
-  List<api.ChatMember> _filterMembers(List<api.ChatMember> members) {
-    final query = _memberSearchQuery.trim().toLowerCase();
-    if (query.isEmpty) return members;
+  Future<void> _loadMembers({required bool reset}) async {
+    if (reset) {
+      _memberRequestId++;
+      final requestId = _memberRequestId;
+      if (mounted) {
+        setState(() {
+          _membersLoading = true;
+          _membersLoadingMore = false;
+          _membersHasMore = true;
+          _memberPage = 0;
+          _pagedMembers.clear();
+        });
+      }
+      await _fetchMemberPage(1, requestId);
+      return;
+    }
 
-    return members.where((member) {
-      return member.displayName.toLowerCase().contains(query) ||
-          member.nickname.toLowerCase().contains(query) ||
-          member.username.toLowerCase().contains(query);
-    }).toList();
+    if (_membersLoading || _membersLoadingMore || !_membersHasMore) return;
+    _membersLoadingMore = true;
+    await _fetchMemberPage(_memberPage + 1, _memberRequestId);
+  }
+
+  Future<void> _fetchMemberPage(int page, int requestId) async {
+    try {
+      final keyword = _memberSearchQuery.trim();
+      final service = ref.read(api.chatServiceProvider);
+      final response = keyword.isEmpty
+          ? await service.getMembers(
+              widget.groupId,
+              page: page,
+              pageSize: _memberPageSize,
+            )
+          : await service.searchMembers(
+              widget.groupId,
+              keyword,
+              page: page,
+              pageSize: _memberPageSize,
+            );
+      if (!mounted || requestId != _memberRequestId) return;
+      final pageMembers = response.isSuccess ? (response.data ?? []) : <api.ChatMember>[];
+      setState(() {
+        _pagedMembers.addAll(pageMembers);
+        _memberPage = page;
+        _membersHasMore = pageMembers.length >= _memberPageSize;
+        _membersLoading = false;
+        _membersLoadingMore = false;
+      });
+    } catch (_) {
+      if (!mounted || requestId != _memberRequestId) return;
+      setState(() {
+        _membersLoading = false;
+        _membersLoadingMore = false;
+      });
+    }
+  }
+
+  bool _handleMemberScroll(ScrollNotification notification) {
+    if (notification.metrics.extentAfter < 400) {
+      _loadMembers(reset: false);
+    }
+    return false;
+  }
+
+  Widget _buildPagedMemberSection(
+    BuildContext context,
+    api.Chat? chatDetail,
+    String memberKeyword,
+    Color separatorColor,
+    AppLocalizations l10n,
+  ) {
+    if (_membersLoading) {
+      return const Padding(
+        padding: EdgeInsets.all(20),
+        child: Center(child: CircularProgressIndicator()),
+      );
+    }
+
+    final myRole = chatDetail?.myRole ?? 0;
+    final visibleMembers = _membersVisibleToCurrentUser(
+      _pagedMembers,
+      myRole,
+      chatDetail?.memberProtection ?? false,
+    );
+    final memberList = visibleMembers.isEmpty
+        ? Padding(
+            padding: const EdgeInsets.all(20),
+            child: Center(
+              child: Text(
+                memberKeyword.isEmpty
+                    ? _groupProfileText(
+                        context,
+                        zhCN: '暂无成员',
+                        zhTW: '暫無成員',
+                        en: 'No members',
+                      )
+                    : _groupProfileText(
+                        context,
+                        zhCN: '未找到成员',
+                        zhTW: '未找到成員',
+                        en: 'No members found',
+                      ),
+              ),
+            ),
+          )
+        : Column(
+            children: visibleMembers.asMap().entries.map((entry) {
+              final index = entry.key;
+              final member = entry.value;
+              final isLast = index == visibleMembers.length - 1;
+              return Column(
+                children: [
+                  _MemberCell(
+                    member: member,
+                    onTap: myRole >= 2
+                        ? () => _showMemberActions(context, member, myRole)
+                        : null,
+                  ),
+                  if (!isLast)
+                    Padding(
+                      padding: const EdgeInsets.only(left: 72),
+                      child: Divider(
+                        height: 0.5,
+                        thickness: 0.5,
+                        color: separatorColor,
+                      ),
+                    ),
+                ],
+              );
+            }).toList(),
+          );
+
+    return Column(
+      children: [
+        memberList,
+        if (_membersLoadingMore)
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 12),
+            child: Center(
+              child: SizedBox(
+                width: 20,
+                height: 20,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+            ),
+          ),
+      ],
+    );
   }
 
   List<api.ChatMember> _membersVisibleToCurrentUser(
     List<api.ChatMember> members,
     int myRole,
+    bool memberProtection,
   ) {
-    if (myRole >= 2) return members;
+    if (!memberProtection || myRole >= 2) return members;
     return members.where((member) => member.role >= 2).toList();
   }
 
@@ -312,6 +461,7 @@ class _GroupProfilePageState extends ConsumerState<GroupProfilePage> {
       setState(() {
         _memberSearchQuery = value;
       });
+      _loadMembers(reset: true);
     });
   }
 
@@ -342,18 +492,10 @@ class _GroupProfilePageState extends ConsumerState<GroupProfilePage> {
       setState(() => _lastChatDetail = nextChat);
     });
     final chatDetail = chatDetailAsync.valueOrNull ?? _lastChatDetail;
-    final membersAsync = ref.watch(chatMembersProvider(widget.groupId));
     final memberKeyword = _memberSearchQuery.trim();
-    final searchedMembersAsync = memberKeyword.isEmpty
-        ? null
-        : ref.watch(
-            chatMemberSearchProvider((
-              chatId: widget.groupId,
-              keyword: memberKeyword,
-            )),
-          );
-    final activeMembersAsync =
-        memberKeyword.isEmpty ? membersAsync : searchedMembersAsync!;
+    final displayedMemberCount = (chatDetail?.memberCount ?? 0) > 0
+        ? chatDetail!.memberCount
+        : _pagedMembers.length;
     final bgColor = isDark ? AppColors.darkBackground : _groupProfileBg;
     final cardColor = isDark ? AppColors.darkCard : _groupProfileCard;
     final separatorColor =
@@ -381,7 +523,9 @@ class _GroupProfilePageState extends ConsumerState<GroupProfilePage> {
     // 桌面端使用居中布局
     Widget content = Scaffold(
       backgroundColor: bgColor,
-      body: CustomScrollView(
+      body: NotificationListener<ScrollNotification>(
+        onNotification: _handleMemberScroll,
+        child: CustomScrollView(
         slivers: [
           // iOS 风格导航栏
           SliverAppBar(
@@ -495,11 +639,7 @@ class _GroupProfilePageState extends ConsumerState<GroupProfilePage> {
                           ),
                           if (isOfficial) ...[
                             const SizedBox(width: 6),
-                            Icon(
-                              Icons.verified_rounded,
-                              size: 22,
-                              color: iconColor,
-                            ),
+                            const OfficialBadge(size: 22),
                           ],
                         ],
                       );
@@ -745,16 +885,9 @@ class _GroupProfilePageState extends ConsumerState<GroupProfilePage> {
                     ),
                   ),
                   const Spacer(),
-                  activeMembersAsync.when(
-                    data: (members) => Text(
-                      '${_membersVisibleToCurrentUser(
-                        members,
-                        chatDetail?.myRole ?? 0,
-                      ).length}',
-                      style: TextStyle(fontSize: 13, color: secondaryTextColor),
-                    ),
-                    loading: () => const SizedBox.shrink(),
-                    error: (_, __) => const SizedBox.shrink(),
+                  Text(
+                    '$displayedMemberCount',
+                    style: TextStyle(fontSize: 13, color: secondaryTextColor),
                   ),
                   if (chatDetail?.myRole != null && chatDetail!.myRole >= 2)
                     IconButton(
@@ -770,6 +903,7 @@ class _GroupProfilePageState extends ConsumerState<GroupProfilePage> {
                           if (!_showMemberSearch) {
                             _memberSearchQuery = '';
                             _memberSearchController.clear();
+                            _loadMembers(reset: true);
                           }
                         });
                       },
@@ -789,12 +923,19 @@ class _GroupProfilePageState extends ConsumerState<GroupProfilePage> {
               ),
               child: Column(
                 children: [
-                  // 添加成员（管理员或群主可见）
-                  if (chatDetail != null && chatDetail.myRole >= 2)
+                  // 群主、管理员，或群设置允许成员邀请时可添加成员。
+                  if (chatDetail != null &&
+                      (chatDetail.myRole >= 2 ||
+                          (chatDetail.myRole == 1 && chatDetail.canAddMembers)))
                     _TGCell(
                       icon: Icons.person_add_outlined,
                       iconColor: iconColor,
-                      title: l10n.addMembers,
+                      title: _groupProfileText(
+                        context,
+                        zhCN: '邀请好友',
+                        zhTW: '邀請好友',
+                        en: 'Invite Friends',
+                      ),
                       titleColor: primaryTextColor,
                       onTap: () => _showAddMemberSheet(context),
                     )
@@ -860,6 +1001,7 @@ class _GroupProfilePageState extends ConsumerState<GroupProfilePage> {
                                       _memberSearchController.clear();
                                       _memberSearchQuery = '';
                                     });
+                                    _loadMembers(reset: true);
                                   },
                                 ),
                           isDense: true,
@@ -882,73 +1024,12 @@ class _GroupProfilePageState extends ConsumerState<GroupProfilePage> {
                       ),
                     ),
                   // 成员列表
-                  activeMembersAsync.when(
-                    data: (members) {
-                      final myRole = chatDetail?.myRole ?? 0;
-                      final visibleMembers =
-                          _membersVisibleToCurrentUser(members, myRole);
-                      if (visibleMembers.isEmpty) {
-                        return Padding(
-                          padding: const EdgeInsets.all(20),
-                          child: Center(
-                            child: Text(
-                              memberKeyword.isEmpty
-                                  ? _groupProfileText(
-                                      context,
-                                      zhCN: '暂无成员',
-                                      zhTW: '暫無成員',
-                                      en: 'No members',
-                                    )
-                                  : _groupProfileText(
-                                      context,
-                                      zhCN: '未找到成员',
-                                      zhTW: '未找到成員',
-                                      en: 'No members found',
-                                    ),
-                            ),
-                          ),
-                        );
-                      }
-                      return Column(
-                        children: visibleMembers.asMap().entries.map((entry) {
-                          final index = entry.key;
-                          final member = entry.value;
-                          final isLast = index == visibleMembers.length - 1;
-
-                          return Column(
-                            children: [
-                              _MemberCell(
-                                member: member,
-                                onTap: myRole >= 2
-                                    ? () => _showMemberActions(
-                                          context,
-                                          member,
-                                          myRole,
-                                        )
-                                    : null,
-                              ),
-                              if (!isLast)
-                                Padding(
-                                  padding: const EdgeInsets.only(left: 72),
-                                  child: Divider(
-                                    height: 0.5,
-                                    thickness: 0.5,
-                                    color: separatorColor,
-                                  ),
-                                ),
-                            ],
-                          );
-                        }).toList(),
-                      );
-                    },
-                    loading: () => const Padding(
-                      padding: EdgeInsets.all(20),
-                      child: Center(child: CircularProgressIndicator()),
-                    ),
-                    error: (_, __) => Padding(
-                      padding: EdgeInsets.all(20),
-                      child: Center(child: Text(l10n.get('loading_failed'))),
-                    ),
+                  _buildPagedMemberSection(
+                    context,
+                    chatDetail,
+                    memberKeyword,
+                    separatorColor,
+                    l10n,
                   ),
                 ],
               ),
@@ -982,15 +1063,37 @@ class _GroupProfilePageState extends ConsumerState<GroupProfilePage> {
                     ),
                   ),
                 ),
-                Padding(
-                  padding: const EdgeInsets.only(left: 16),
-                  child: Divider(
-                    height: 0.5,
-                    thickness: 0.5,
-                    color: separatorColor,
+                // 已入群成员：清空自己的聊天记录
+                if (chatDetail != null && chatDetail.myRole >= 1) ...[
+                  Padding(
+                    padding: const EdgeInsets.only(left: 16),
+                    child: Divider(
+                      height: 0.5,
+                      thickness: 0.5,
+                      color: separatorColor,
+                    ),
                   ),
-                ),
+                  _TGCell(
+                    title: _groupProfileText(
+                      context,
+                      zhCN: '清空聊天记录',
+                      zhTW: '清空聊天記錄',
+                      en: 'Clear Chat History',
+                    ),
+                    titleColor: Colors.orange,
+                    onTap: () => _showClearMyChatHistoryDialog(context),
+                  ),
+                ],
                 if (chatDetail != null && chatDetail.myRole == 3) ...[
+                  Padding(
+                    padding: const EdgeInsets.only(left: 16),
+                    child: Divider(
+                      height: 0.5,
+                      thickness: 0.5,
+                      color: separatorColor,
+                    ),
+                  ),
+                  // 群主：清空全员群消息
                   _TGCell(
                     title: _groupProfileText(
                       context,
@@ -1015,28 +1118,49 @@ class _GroupProfilePageState extends ConsumerState<GroupProfilePage> {
                     titleColor: Colors.red,
                     onTap: () => _showDissolveDialog(context),
                   ),
-                ] else if (chatDetail != null && chatDetail.myRole >= 1)
-                  // 已加入 - 显示退出群组
+                ] else if ((chatDetail != null && chatDetail.myRole >= 1) ||
+                    ref.watch(chatListProvider).allChats.any(
+                          (item) => item.id == widget.groupId,
+                        )) ...[
+                  Padding(
+                    padding: const EdgeInsets.only(left: 16),
+                    child: Divider(
+                      height: 0.5,
+                      thickness: 0.5,
+                      color: separatorColor,
+                    ),
+                  ),
+                  // 已加入 - 显示退出群组。会话列表已有该群时，不再显示加入。
                   _TGCell(
                     title: l10n.leaveGroup,
                     titleColor: Colors.red,
                     onTap: () => _showLeaveDialog(context),
-                  )
-                else if (chatDetailAsync.isLoading && _lastChatDetail == null)
+                  ),
+                ] else if (chatDetailAsync.isLoading && _lastChatDetail == null)
                   const SizedBox.shrink()
-                else
+                else ...[
+                  Padding(
+                    padding: const EdgeInsets.only(left: 16),
+                    child: Divider(
+                      height: 0.5,
+                      thickness: 0.5,
+                      color: separatorColor,
+                    ),
+                  ),
                   // 未加入 - 显示加入群组
                   _TGCell(
                     title: l10n.get('join_group'),
                     titleColor: primaryTextColor,
                     onTap: () => _joinGroup(context),
                   ),
+                ],
               ],
             ),
           ),
 
           SliverToBoxAdapter(child: SizedBox(height: 40)),
         ],
+      ),
       ),
     );
 
@@ -1219,6 +1343,7 @@ class _GroupProfilePageState extends ConsumerState<GroupProfilePage> {
   void _showLeaveDialog(BuildContext context) {
     showModalBottomSheet(
       context: context,
+      isScrollControlled: true,
       backgroundColor: Colors.transparent,
       builder: (context) => _TGActionSheet(
         title: _groupProfileText(
@@ -1310,13 +1435,11 @@ class _GroupProfilePageState extends ConsumerState<GroupProfilePage> {
     setState(() {});
   }
 
-  /// 显示添加成员选择器
+  /// 显示添加成员 / 邀请好友选择器（对接 invite-candidates）
   void _showAddMemberSheet(BuildContext context) {
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (context) => _AddMemberSheet(
+    unawaited(
+      showGroupInviteFriendsSheet(
+        context: context,
         chatId: widget.groupId,
         onMembersAdded: () {
           ref.invalidate(chatMembersProvider(widget.groupId));
@@ -1437,6 +1560,7 @@ class _GroupProfilePageState extends ConsumerState<GroupProfilePage> {
 
     showModalBottomSheet(
       context: context,
+      isScrollControlled: true,
       backgroundColor: Colors.transparent,
       builder: (context) => _TGActionSheet(
         actions: actions,
@@ -1469,9 +1593,94 @@ class _GroupProfilePageState extends ConsumerState<GroupProfilePage> {
     }
   }
 
+  void _showClearMyChatHistoryDialog(BuildContext context) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) => _TGActionSheet(
+        title: _groupProfileText(
+          context,
+          zhCN: '清空聊天记录？',
+          zhTW: '清空聊天記錄？',
+          en: 'Clear chat history?',
+        ),
+        message: _groupProfileText(
+          context,
+          zhCN: '仅清空你自己的聊天记录，其他群成员不受影响。此操作无法撤销。',
+          zhTW: '僅清空你自己的聊天記錄，其他群成員不受影響。此操作無法復原。',
+          en: 'This only clears your own chat history. Other members are not affected. This cannot be undone.',
+        ),
+        actions: [
+          _TGActionSheetItem(
+            title: _groupProfileText(
+              context,
+              zhCN: '清空聊天记录',
+              zhTW: '清空聊天記錄',
+              en: 'Clear Chat History',
+            ),
+            isDestructive: true,
+            onTap: () => _clearMyChatHistory(context),
+          ),
+        ],
+        cancelText: AppLocalizations.of(context).cancel,
+      ),
+    );
+  }
+
+  Future<void> _clearMyChatHistory(BuildContext context) async {
+    Navigator.pop(context);
+
+    try {
+      final ok = await ref
+          .read(chatListProvider.notifier)
+          .clearChatHistoryThoroughly(widget.groupId);
+
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            ok
+                ? _groupProfileText(
+                    context,
+                    zhCN: '聊天记录已清空',
+                    zhTW: '聊天記錄已清空',
+                    en: 'Chat history cleared',
+                  )
+                : _groupProfileText(
+                    context,
+                    zhCN: '清空聊天记录失败',
+                    zhTW: '清空聊天記錄失敗',
+                    en: 'Failed to clear chat history',
+                  ),
+          ),
+          backgroundColor: ok ? Colors.green : Colors.red,
+        ),
+      );
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              _groupProfileText(
+                context,
+                zhCN: '清空聊天记录失败，请重试',
+                zhTW: '清空聊天記錄失敗，請重試',
+                en: 'Failed to clear chat history. Please try again.',
+              ),
+            ),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
   void _showClearGroupMessagesDialog(BuildContext context) {
     showModalBottomSheet(
       context: context,
+      isScrollControlled: true,
       backgroundColor: Colors.transparent,
       builder: (context) => _TGActionSheet(
         title: _groupProfileText(
@@ -1514,10 +1723,11 @@ class _GroupProfilePageState extends ConsumerState<GroupProfilePage> {
       if (!mounted) return;
 
       if (response.isSuccess) {
-        ref.invalidate(chatDetailProvider(widget.groupId));
+        // 群全局清空 API 已成功；本地彻底清缓存，勿再 silentRefresh。
         await ref
             .read(chatListProvider.notifier)
-            .silentRefresh(bypassDebounce: true);
+            .clearChatHistoryThoroughly(widget.groupId, skipApi: true);
+        ref.invalidate(chatDetailProvider(widget.groupId));
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
@@ -1569,6 +1779,7 @@ class _GroupProfilePageState extends ConsumerState<GroupProfilePage> {
   void _showDissolveDialog(BuildContext context) {
     showModalBottomSheet(
       context: context,
+      isScrollControlled: true,
       backgroundColor: Colors.transparent,
       builder: (context) => _TGActionSheet(
         title: _groupProfileText(
@@ -1703,7 +1914,7 @@ class _GroupProfilePageState extends ConsumerState<GroupProfilePage> {
               zhTW: '取消管理員',
               en: 'Remove Admin',
             ),
-            onTap: () => _setMemberRole(context, member.userId, 0),
+            onTap: () => _setMemberRole(context, member.userId, 1),
           ),
         );
       } else {
@@ -1715,7 +1926,7 @@ class _GroupProfilePageState extends ConsumerState<GroupProfilePage> {
               zhTW: '設為管理員',
               en: 'Set as Admin',
             ),
-            onTap: () => _setMemberRole(context, member.userId, 1),
+            onTap: () => _setMemberRole(context, member.userId, 2),
           ),
         );
       }
@@ -1784,6 +1995,7 @@ class _GroupProfilePageState extends ConsumerState<GroupProfilePage> {
 
     showModalBottomSheet(
       context: context,
+      isScrollControlled: true,
       backgroundColor: Colors.transparent,
       builder: (context) => _TGActionSheet(
         title: member.displayName,
@@ -1900,6 +2112,7 @@ class _GroupProfilePageState extends ConsumerState<GroupProfilePage> {
 
     showModalBottomSheet(
       context: context,
+      isScrollControlled: true,
       backgroundColor: Colors.transparent,
       builder: (context) => _TGActionSheet(
         title: _groupProfileText(
@@ -2136,7 +2349,7 @@ class _GroupProfilePageState extends ConsumerState<GroupProfilePage> {
       if (!mounted) return;
 
       if (response.isSuccess) {
-        final roleText = role == 1
+        final roleText = role == 2
             ? _groupProfileText(context, zhCN: '管理员', zhTW: '管理員', en: 'Admin')
             : _groupProfileText(
                 context,
@@ -3108,125 +3321,134 @@ class _TGActionSheet extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
     final bgColor = AppColors.cardFor(context);
 
     return SafeArea(
       child: Padding(
         padding: const EdgeInsets.all(8),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              decoration: BoxDecoration(
-                color: bgColor,
-                borderRadius: BorderRadius.circular(14),
-              ),
-              child: Column(
-                children: [
-                  if (title != null || message != null)
-                    Padding(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 16,
-                        vertical: 12,
-                      ),
-                      child: Column(
-                        children: [
-                          if (title != null)
-                            Text(
-                              title!,
-                              style: TextStyle(
-                                fontSize: 13,
-                                fontWeight: FontWeight.w600,
-                                color: Colors.grey,
-                              ),
-                              textAlign: TextAlign.center,
-                            ),
-                          if (message != null) ...[
-                            const SizedBox(height: 4),
-                            Text(
-                              message!,
-                              style: TextStyle(
-                                fontSize: 13,
-                                color: Colors.grey,
-                              ),
-                              textAlign: TextAlign.center,
-                            ),
-                          ],
-                        ],
-                      ),
-                    ),
-                  if (title != null || message != null)
-                    Divider(
-                      height: 0.5,
-                      thickness: 0.5,
-                      color: AppColors.dividerFor(context),
-                    ),
-                  ...actions.map(
-                    (action) => Column(
-                      children: [
-                        GestureDetector(
-                          onTap: action.onTap,
-                          behavior: HitTestBehavior.opaque,
-                          child: Container(
-                            width: double.infinity,
-                            padding: const EdgeInsets.symmetric(
-                              vertical: 16,
-                              horizontal: 16,
-                            ),
-                            child: Row(
-                              children: [
-                                Expanded(
-                                  child: Text(
-                                    action.title,
-                                    style: TextStyle(
-                                      fontSize: 20,
-                                      color: action.isDestructive
-                                          ? Colors.red
-                                          : _groupProfileInkFor(context),
-                                    ),
-                                    textAlign: TextAlign.center,
+        child: ConstrainedBox(
+          constraints: BoxConstraints(
+            maxHeight: MediaQuery.sizeOf(context).height * 0.8,
+          ),
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  decoration: BoxDecoration(
+                    color: bgColor,
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                  clipBehavior: Clip.antiAlias,
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (title != null || message != null)
+                        Padding(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 16,
+                            vertical: 12,
+                          ),
+                          child: Column(
+                            children: [
+                              if (title != null)
+                                Text(
+                                  title!,
+                                  style: const TextStyle(
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w600,
+                                    color: Colors.grey,
                                   ),
+                                  textAlign: TextAlign.center,
                                 ),
-                                if (action.trailing != null) action.trailing!,
+                              if (message != null) ...[
+                                const SizedBox(height: 4),
+                                Text(
+                                  message!,
+                                  style: const TextStyle(
+                                    fontSize: 13,
+                                    color: Colors.grey,
+                                  ),
+                                  textAlign: TextAlign.center,
+                                ),
                               ],
-                            ),
+                            ],
                           ),
                         ),
-                        if (actions.indexOf(action) < actions.length - 1)
-                          Divider(
-                            height: 0.5,
-                            thickness: 0.5,
-                            color: AppColors.dividerFor(context),
-                          ),
-                      ],
+                      if (title != null || message != null)
+                        Divider(
+                          height: 0.5,
+                          thickness: 0.5,
+                          color: AppColors.dividerFor(context),
+                        ),
+                      ...actions.map(
+                        (action) => Column(
+                          children: [
+                            GestureDetector(
+                              onTap: action.onTap,
+                              behavior: HitTestBehavior.opaque,
+                              child: Container(
+                                width: double.infinity,
+                                padding: const EdgeInsets.symmetric(
+                                  vertical: 16,
+                                  horizontal: 16,
+                                ),
+                                child: Row(
+                                  children: [
+                                    Expanded(
+                                      child: Text(
+                                        action.title,
+                                        style: TextStyle(
+                                          fontSize: 20,
+                                          color: action.isDestructive
+                                              ? Colors.red
+                                              : _groupProfileInkFor(context),
+                                        ),
+                                        textAlign: TextAlign.center,
+                                      ),
+                                    ),
+                                    if (action.trailing != null)
+                                      action.trailing!,
+                                  ],
+                                ),
+                              ),
+                            ),
+                            if (actions.indexOf(action) < actions.length - 1)
+                              Divider(
+                                height: 0.5,
+                                thickness: 0.5,
+                                color: AppColors.dividerFor(context),
+                              ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 8),
+                GestureDetector(
+                  onTap: () => Navigator.pop(context),
+                  child: Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(vertical: 16),
+                    decoration: BoxDecoration(
+                      color: bgColor,
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                    child: Text(
+                      cancelText,
+                      style: TextStyle(
+                        fontSize: 20,
+                        fontWeight: FontWeight.w600,
+                        color: _groupProfileInkFor(context),
+                      ),
+                      textAlign: TextAlign.center,
                     ),
                   ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 8),
-            GestureDetector(
-              onTap: () => Navigator.pop(context),
-              child: Container(
-                width: double.infinity,
-                padding: const EdgeInsets.symmetric(vertical: 16),
-                decoration: BoxDecoration(
-                  color: bgColor,
-                  borderRadius: BorderRadius.circular(14),
                 ),
-                child: Text(
-                  cancelText,
-                  style: TextStyle(
-                    fontSize: 20,
-                    fontWeight: FontWeight.w600,
-                    color: _groupProfileInkFor(context),
-                  ),
-                  textAlign: TextAlign.center,
-                ),
-              ),
+              ],
             ),
-          ],
+          ),
         ),
       ),
     );
@@ -4588,6 +4810,7 @@ class _EditGroupPageState extends ConsumerState<_EditGroupPage> {
 
       if (response.isSuccess) {
         ref.invalidate(chatDetailProvider(widget.chatId));
+        ref.invalidate(chatMembersProvider(widget.chatId));
       } else {
         // 恢复原值
         _loadGroupInfo();
@@ -5003,68 +5226,7 @@ class _EditGroupPageState extends ConsumerState<_EditGroupPage> {
             ),
           ),
 
-          if (_username != null && _username!.isNotEmpty) ...[
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 20, 16, 4),
-              child: Text(
-                _groupProfileText(
-                  context,
-                  zhCN: '用户名长度为 5-32 个字符，只能包含字母、数字和下划线。',
-                  zhTW: '使用者名稱長度為 5-32 個字元，只能包含字母、數字和底線。',
-                  en: 'The username must be 5-32 characters and can contain only letters, numbers, and underscores.',
-                ),
-                style: TextStyle(fontSize: 13, color: Colors.grey),
-              ),
-            ),
-            Container(
-              color: cardColor,
-              child: Column(
-                children: [
-                  ListTile(
-                    leading: Icon(
-                      Icons.alternate_email,
-                      color: _groupProfileInkFor(context),
-                    ),
-                    title: Text(
-                      _groupProfileText(
-                        context,
-                        zhCN: '群组号',
-                        zhTW: '群組號',
-                        en: 'Group ID',
-                      ),
-                    ),
-                    subtitle: Text(
-                      '@$_username',
-                      style: TextStyle(
-                        color: _groupProfileInkFor(context),
-                        fontSize: 14,
-                      ),
-                    ),
-                    trailing: Icon(
-                      Icons.chevron_right,
-                      color: Colors.grey.shade400,
-                    ),
-                    onTap: () {
-                      Clipboard.setData(ClipboardData(text: '@$_username'));
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          content: Text(
-                            _groupProfileText(
-                              context,
-                              zhCN: '群组号已复制',
-                              zhTW: '群組號已複製',
-                              en: 'Group ID copied',
-                            ),
-                          ),
-                          duration: Duration(seconds: 1),
-                        ),
-                      );
-                    },
-                  ),
-                ],
-              ),
-            ),
-          ],
+          // 群组号及相关说明已隐藏
 
           // 加入设置
           Padding(
@@ -5361,411 +5523,6 @@ class _PermissionTile extends StatelessWidget {
       value: value,
       activeColor: _groupProfileInkFor(context),
       onChanged: onChanged,
-    );
-  }
-}
-
-// 添加成员选择器
-class _AddMemberSheet extends ConsumerStatefulWidget {
-  final String chatId;
-  final VoidCallback onMembersAdded;
-
-  const _AddMemberSheet({required this.chatId, required this.onMembersAdded});
-
-  @override
-  ConsumerState<_AddMemberSheet> createState() => _AddMemberSheetState();
-}
-
-class _AddMemberSheetState extends ConsumerState<_AddMemberSheet> {
-  final Set<String> _selectedIds = {};
-  bool _isLoading = false;
-  bool _isLoadingContacts = true;
-  Timer? _searchDebounce;
-  String _searchQuery = '';
-  bool get _hasCachedContacts => ref.read(contactListProvider).isNotEmpty;
-
-  @override
-  void initState() {
-    super.initState();
-    // 加载联系人列表
-    _loadContacts();
-  }
-
-  @override
-  void dispose() {
-    _searchDebounce?.cancel();
-    super.dispose();
-  }
-
-  Future<void> _loadContacts() async {
-    final notifier = ref.read(contactListProvider.notifier);
-    if (mounted) {
-      setState(() => _isLoadingContacts = !_hasCachedContacts);
-    }
-    try {
-      await notifier.initialize();
-      if (notifier.shouldRefresh) {
-        await notifier.loadFromServer();
-      }
-    } finally {
-      if (mounted) {
-        setState(() => _isLoadingContacts = false);
-      }
-    }
-  }
-
-  void _onSearchChanged(String value) {
-    _searchDebounce?.cancel();
-    _searchDebounce = Timer(const Duration(milliseconds: 120), () {
-      if (!mounted) return;
-      setState(() => _searchQuery = value);
-    });
-  }
-
-  Future<void> _addMembers() async {
-    if (_selectedIds.isEmpty) return;
-
-    setState(() => _isLoading = true);
-
-    try {
-      final apiClient = ref.read(apiClientProvider);
-      final response = await apiClient.post(
-        '/chat/${widget.chatId}/members',
-        data: {'user_ids': _selectedIds.toList()},
-      );
-
-      if (!mounted) return;
-
-      if (response.isSuccess) {
-        widget.onMembersAdded();
-        Navigator.pop(context);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              _groupProfileText(
-                context,
-                zhCN: '已添加 ${_selectedIds.length} 位成员',
-                zhTW: '已新增 ${_selectedIds.length} 位成員',
-                en: 'Added ${_selectedIds.length} members',
-              ),
-            ),
-            backgroundColor: Colors.green,
-          ),
-        );
-      } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              _groupServerMessage(
-                response.message,
-                zhCN: '添加失败',
-                zhTW: '新增失敗',
-                en: 'Failed to add members',
-              ),
-            ),
-            backgroundColor: Colors.red,
-          ),
-        );
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              _groupProfileText(
-                context,
-                zhCN: '添加失败，请重试',
-                zhTW: '新增失敗，請重試',
-                en: 'Failed to add members. Please try again.',
-              ),
-            ),
-            backgroundColor: Colors.red,
-          ),
-        );
-      }
-    } finally {
-      if (mounted) setState(() => _isLoading = false);
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    final bgColor = AppColors.surfaceFor(context);
-    final cardColor = Theme.of(context).brightness == Brightness.dark
-        ? AppColors.cardFor(context)
-        : AppColors.lightBackground;
-    final contactsAsync = ref.watch(contactListProvider);
-    final membersAsync = ref.watch(chatMembersProvider(widget.chatId));
-
-    // 获取现有成员ID列表
-    final existingMemberIds =
-        membersAsync.valueOrNull?.map((m) => m.userId).toSet() ?? {};
-
-    return Container(
-      height: MediaQuery.of(context).size.height * 0.8,
-      decoration: BoxDecoration(
-        color: bgColor,
-        borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      child: Column(
-        children: [
-          // 顶部拖动条
-          Container(
-            margin: const EdgeInsets.only(top: 8),
-            width: 36,
-            height: 4,
-            decoration: BoxDecoration(
-              color: Colors.grey.shade400,
-              borderRadius: BorderRadius.circular(2),
-            ),
-          ),
-          // 标题栏
-          Padding(
-            padding: const EdgeInsets.all(16),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                TextButton(
-                  onPressed: () => Navigator.pop(context),
-                  child: Text(
-                    _groupProfileText(
-                      context,
-                      zhCN: '取消',
-                      zhTW: '取消',
-                      en: 'Cancel',
-                    ),
-                    style: TextStyle(color: Colors.grey, fontSize: 17),
-                  ),
-                ),
-                Text(
-                  _groupProfileText(
-                    context,
-                    zhCN: '添加成员',
-                    zhTW: '新增成員',
-                    en: 'Add Members',
-                  ),
-                  style: TextStyle(
-                    fontSize: 17,
-                    fontWeight: FontWeight.w600,
-                    color: AppColors.textPrimaryFor(context),
-                  ),
-                ),
-                TextButton(
-                  onPressed:
-                      _selectedIds.isEmpty || _isLoading ? null : _addMembers,
-                  child: _isLoading
-                      ? const SizedBox(
-                          width: 20,
-                          height: 20,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : Text(
-                          _groupProfileText(
-                            context,
-                            zhCN:
-                                '添加${_selectedIds.isNotEmpty ? "(${_selectedIds.length})" : ""}',
-                            zhTW:
-                                '新增${_selectedIds.isNotEmpty ? "(${_selectedIds.length})" : ""}',
-                            en: _selectedIds.isNotEmpty
-                                ? 'Add (${_selectedIds.length})'
-                                : 'Add',
-                          ),
-                          style: TextStyle(
-                            color: _selectedIds.isEmpty
-                                ? Colors.grey
-                                : _groupProfileInkFor(context),
-                            fontSize: 17,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                ),
-              ],
-            ),
-          ),
-          // 搜索框
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: Container(
-              decoration: BoxDecoration(
-                color: cardColor,
-                borderRadius: BorderRadius.circular(10),
-              ),
-              child: TextField(
-                onChanged: _onSearchChanged,
-                style: TextStyle(color: AppColors.textPrimaryFor(context)),
-                decoration: InputDecoration(
-                  hintText: _groupProfileText(
-                    context,
-                    zhCN: '搜索联系人',
-                    zhTW: '搜尋聯絡人',
-                    en: 'Search contacts',
-                  ),
-                  hintStyle: TextStyle(color: Colors.grey),
-                  prefixIcon: Icon(Icons.search, color: Colors.grey),
-                  border: InputBorder.none,
-                  contentPadding: const EdgeInsets.symmetric(
-                    horizontal: 16,
-                    vertical: 12,
-                  ),
-                ),
-              ),
-            ),
-          ),
-          const SizedBox(height: 12),
-          // 联系人列表
-          Expanded(
-            child: _isLoadingContacts
-                ? const Center(child: CircularProgressIndicator())
-                : Builder(
-                    builder: (context) {
-                      final contacts = contactsAsync;
-
-                      // 过滤掉已是群成员的联系人
-                      var filteredContacts = contacts
-                          .where((c) => !existingMemberIds.contains(c.uuid))
-                          .toList();
-
-                      // 搜索过滤
-                      if (_searchQuery.isNotEmpty) {
-                        filteredContacts = filteredContacts
-                            .where((c) => c.matchesQuery(_searchQuery))
-                            .toList();
-                      }
-
-                      if (filteredContacts.isEmpty) {
-                        return Center(
-                          child: Column(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              Icon(
-                                Icons.person_off_outlined,
-                                size: 64,
-                                color: Colors.grey,
-                              ),
-                              const SizedBox(height: 16),
-                              Text(
-                                _searchQuery.isNotEmpty
-                                    ? _groupProfileText(
-                                        context,
-                                        zhCN: '未找到联系人',
-                                        zhTW: '找不到聯絡人',
-                                        en: 'No contacts found',
-                                      )
-                                    : _groupProfileText(
-                                        context,
-                                        zhCN: '没有可添加的联系人',
-                                        zhTW: '沒有可新增的聯絡人',
-                                        en: 'No contacts available to add',
-                                      ),
-                                style: TextStyle(
-                                  fontSize: 17,
-                                  color: Colors.grey,
-                                ),
-                              ),
-                            ],
-                          ),
-                        );
-                      }
-
-                      return ListView.builder(
-                        itemCount: filteredContacts.length,
-                        itemBuilder: (context, index) {
-                          final contact = filteredContacts[index];
-                          final isSelected = _selectedIds.contains(
-                            contact.uuid,
-                          );
-                          final displayName = contact.name.isNotEmpty
-                              ? contact.name
-                              : _fallbackUserName(context, contact.username);
-
-                          return ListTile(
-                            leading: Stack(
-                              children: [
-                                AvatarWidget(
-                                  name: displayName,
-                                  avatar: contact.avatar,
-                                  userId: contact.uuid,
-                                  size: 44,
-                                ),
-                                if (isSelected)
-                                  Positioned(
-                                    right: 0,
-                                    bottom: 0,
-                                    child: Container(
-                                      width: 18,
-                                      height: 18,
-                                      decoration: BoxDecoration(
-                                        color: _groupProfileInkFor(context),
-                                        shape: BoxShape.circle,
-                                        border: Border.all(
-                                          color: bgColor,
-                                          width: 2,
-                                        ),
-                                      ),
-                                      child: const Icon(
-                                        Icons.check,
-                                        size: 12,
-                                        color: Colors.white,
-                                      ),
-                                    ),
-                                  ),
-                              ],
-                            ),
-                            title: Row(
-                              children: [
-                                Flexible(
-                                  child: ColoredNameWidget(
-                                    name: displayName,
-                                    nicknameColor: contact.nicknameColor,
-                                    fontSize: 17,
-                                  ),
-                                ),
-                                if (contact.emojiAvatar != null &&
-                                    contact.emojiAvatar!.isNotEmpty) ...[
-                                  const SizedBox(width: 4),
-                                  EmojiStatusWidget(
-                                    emoji: contact.emojiAvatar!,
-                                    size: 18,
-                                  ),
-                                ],
-                              ],
-                            ),
-                            subtitle: contact.username != null
-                                ? Text(
-                                    '@${contact.username}',
-                                    style: TextStyle(
-                                      color: Colors.grey,
-                                      fontSize: 14,
-                                    ),
-                                  )
-                                : null,
-                            trailing: isSelected
-                                ? Icon(
-                                    Icons.check_circle,
-                                    color: _groupProfileInkFor(context),
-                                  )
-                                : Icon(
-                                    Icons.radio_button_unchecked,
-                                    color: Colors.grey.shade400,
-                                  ),
-                            onTap: () {
-                              setState(() {
-                                if (isSelected) {
-                                  _selectedIds.remove(contact.uuid);
-                                } else {
-                                  _selectedIds.add(contact.uuid!);
-                                }
-                              });
-                            },
-                          );
-                        },
-                      );
-                    },
-                  ),
-          ),
-        ],
-      ),
     );
   }
 }
@@ -6567,7 +6324,12 @@ class _GroupAnnouncementsPageState
               : RefreshIndicator(
                   onRefresh: () => _loadAnnouncements(refresh: true),
                   child: ListView.builder(
-                    padding: const EdgeInsets.symmetric(vertical: 12),
+                    padding: EdgeInsets.fromLTRB(
+                      0,
+                      12,
+                      0,
+                      12 + MediaQuery.paddingOf(context).bottom,
+                    ),
                     itemCount: _announcements.length + (_hasMore ? 1 : 0),
                     itemBuilder: (context, index) {
                       if (index >= _announcements.length) {
