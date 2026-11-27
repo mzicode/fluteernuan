@@ -1,4 +1,4 @@
-# Prepares Agora / Firebase native SDKs and applies Windows CMake workarounds.
+# Prepares Agora / Firebase / NERTC native SDKs and applies Windows CMake workarounds.
 # Run from the Flutter project root after `flutter pub get`.
 
 $ErrorActionPreference = 'Stop'
@@ -133,6 +133,50 @@ if ($env:GITHUB_ENV) {
 }
 $env:FIREBASE_CPP_SDK_DIR = $firebaseSdkDir
 Write-Host "FIREBASE_CPP_SDK_DIR=$firebaseSdkDir"
+
+# nertc_core 5.9.30 downloads NERTC_Windows_SDK_V5.9.21 from yx-web-nosdn, and that
+# object now returns 404. CMake file(DOWNLOAD) then aborts configure. The same
+# plugin sources in nertc_core 5.9.31 use this still-hosted 5.9.11 package.
+# Point the checked-out plugin at that URL and place the zip where DownloadSDK.cmake
+# expects it (filename + an extra .zip), so configure extracts it instead of downloading.
+$nertcRoot = Get-PackageRoot 'nertc_core'
+$nertcCmake = Join-Path $nertcRoot 'windows/cmake/DownloadSDK.cmake'
+if (-not (Test-Path -LiteralPath $nertcCmake)) {
+    throw "nertc DownloadSDK.cmake not found: $nertcCmake"
+}
+$nertcCmakeText = [System.IO.File]::ReadAllText($nertcCmake)
+if ($nertcCmakeText -notmatch 'set\(NATIVE_SDK_DOWNLOAD_URL "([^"]+)"\)') {
+    throw 'NATIVE_SDK_DOWNLOAD_URL was not found in nertc DownloadSDK.cmake'
+}
+$nertcUrl = $Matches[1]
+$nertcFallbackUrl = 'https://yx-web-nosdn.netease.im/package/1761213316/NERTC_Windows_SDK_V5.9.11.zip?download=NERTC_Windows_SDK_V5.9.11.zip'
+# A 404 from curl writes to stderr. PowerShell 7 treats that as a terminating
+# error when ErrorActionPreference is Stop, which would skip the fallback.
+$savedNativeErrorAction = $null
+if (Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction SilentlyContinue) {
+    $savedNativeErrorAction = $PSNativeCommandUseErrorActionPreference
+    $PSNativeCommandUseErrorActionPreference = $false
+}
+& curl.exe --silent --location --fail --head --max-time 30 --output NUL $nertcUrl
+$nertcProbe = $LASTEXITCODE
+if ($null -ne $savedNativeErrorAction) {
+    $PSNativeCommandUseErrorActionPreference = $savedNativeErrorAction
+}
+if ($nertcProbe -ne 0) {
+    Write-Host "NERTC SDK URL is unavailable, switching to the hosted 5.9.11 package"
+    $nertcUrl = $nertcFallbackUrl
+    $nertcPatched = [regex]::Replace(
+        $nertcCmakeText,
+        'set\(NATIVE_SDK_DOWNLOAD_URL "[^"]+"\)',
+        "set(NATIVE_SDK_DOWNLOAD_URL `"$nertcUrl`")"
+    )
+    Write-Utf8NoBom -Path $nertcCmake -Content $nertcPatched
+}
+$nertcFileName = [IO.Path]::GetFileName(([Uri]$nertcUrl).AbsolutePath)
+$nertcNativeDir = Join-Path $nertcRoot 'windows/third_party/native'
+$nertcZip = Join-Path $nertcNativeDir ($nertcFileName + '.zip')
+Invoke-Download -Url $nertcUrl -Destination $nertcZip
+Write-Host "NERTC SDK prepared at $nertcZip"
 
 $jniRoot = Get-PackageRoot 'jni'
 $jniCmake = Join-Path $jniRoot 'src/CMakeLists.txt'
