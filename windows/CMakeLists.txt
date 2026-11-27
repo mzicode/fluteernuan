@@ -87,9 +87,17 @@ install(FILES "${FLUTTER_LIBRARY}" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
 
 foreach(bundled_lib IN LISTS PLUGIN_BUNDLED_LIBRARIES)
   if(bundled_lib)
-    install(FILES "${bundled_lib}"
-      DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
-      COMPONENT Runtime)
+    if(IS_DIRECTORY "${bundled_lib}")
+      # alog_windows publishes windows/bin/ instead of the DLL file. Current
+      # CMake rejects install(FILES) when the path is a directory.
+      install(DIRECTORY "${bundled_lib}/"
+        DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
+        COMPONENT Runtime)
+    else()
+      install(FILES "${bundled_lib}"
+        DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
+        COMPONENT Runtime)
+    endif()
   endif()
 endforeach()
 
