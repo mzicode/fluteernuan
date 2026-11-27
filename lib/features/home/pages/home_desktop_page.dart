@@ -706,13 +706,18 @@ class _HomeDesktopPageState extends ConsumerState<HomeDesktopPage> {
   }
 
   int _getUnreadChatCount() {
-    final state = ref.watch(chatListProvider);
-    final chatUnread = state.pinnedChats
-            .where((c) => c.unreadCount > 0)
-            .fold<int>(0, (sum, c) => sum + c.unreadCount) +
-        state.regularChats
-            .where((c) => c.unreadCount > 0)
-            .fold<int>(0, (sum, c) => sum + c.unreadCount);
+    final chatUnread = ref.watch(
+      chatListProvider.select((state) {
+        var total = 0;
+        for (final chat in state.pinnedChats) {
+          if (chat.unreadCount > 0) total += chat.unreadCount;
+        }
+        for (final chat in state.regularChats) {
+          if (chat.unreadCount > 0) total += chat.unreadCount;
+        }
+        return total;
+      }),
+    );
     return chatUnread + ref.watch(pendingFriendRequestCountProvider);
   }
 

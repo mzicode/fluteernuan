@@ -91,7 +91,10 @@ class WindowService with WindowListener {
         PlatformUtils.desktopMinWidth,
         PlatformUtils.desktopMinHeight,
       ),
-      backgroundColor: Colors.transparent,
+      // Windows 上全透明会打开 DWM 透明合成，滚动和收消息会明显变卡。
+      // 这里使用系统标题栏，不需要透明窗口。macOS 自定义标题栏仍保持透明。
+      backgroundColor:
+          PlatformUtils.isWindows ? const Color(0xFFFFFFFF) : Colors.transparent,
       skipTaskbar: false,
       titleBarStyle: PlatformUtils.isMacOS
           ? TitleBarStyle.hidden // macOS 使用自定义标题栏
