@@ -26,6 +26,7 @@ class TrayService with TrayListener {
   bool _initialized = false;
   bool _isDisposed = false;
   int _unreadCount = 0;
+  String _accountLabel = '';
   String _appDisplayName = defaultAppDisplayName();
 
   String _trayText({
@@ -94,12 +95,28 @@ class TrayService with TrayListener {
   }
 
   String _buildTooltip() {
-    if (_unreadCount <= 0) return _appDisplayName;
+    final title = _accountLabel.isEmpty
+        ? _appDisplayName
+        : '$_appDisplayName · $_accountLabel';
+    if (_unreadCount <= 0) return title;
     return _trayText(
-      zhCN: '$_appDisplayName ($_unreadCount 条未读)',
-      zhTW: '$_appDisplayName ($_unreadCount 則未讀)',
-      en: '$_appDisplayName ($_unreadCount unread)',
+      zhCN: '$title ($_unreadCount 条未读)',
+      zhTW: '$title ($_unreadCount 則未讀)',
+      en: '$title ($_unreadCount unread)',
     );
+  }
+
+  Future<void> setAccountLabel(String label) async {
+    if (!PlatformUtils.isWindows) return;
+    final normalized = label.trim();
+    if (_accountLabel == normalized) return;
+    _accountLabel = normalized;
+    if (!_initialized) return;
+    try {
+      await trayManager.setToolTip(_buildTooltip());
+    } catch (e) {
+      debugPrint('[Tray] Failed to update account label: $e');
+    }
   }
 
   Future<void> initialize() async {

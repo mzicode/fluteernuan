@@ -6,6 +6,7 @@ import 'package:hotkey_manager/hotkey_manager.dart';
 
 import '../../i18n/app_localizations.dart';
 import '../../utils/platform_utils.dart';
+import 'desktop_instance_service.dart';
 
 String _hotkeyText({
   required String zhCN,
@@ -37,6 +38,7 @@ class HotkeyService {
 
   bool _initialized = false;
   bool _isDisposed = false;
+  bool _ownsGlobalHotkeys = false;
   final Map<String, HotKey> _registeredHotkeys = {};
   // 注册失败通常表示被操作系统或其他应用占用，不应阻断其余快捷键注册。
   final Set<String> _failedHotkeys = {}; // 跟踪注册失败的快捷键
@@ -58,6 +60,15 @@ class HotkeyService {
   /// 初始化快捷键
   Future<void> initialize() async {
     if (!PlatformUtils.isPhysicalDesktop || _initialized) return;
+    // 后打开的窗口不再注册全局快捷键，也不能清掉第一个窗口已经注册的快捷键。
+    if (!DesktopInstanceService.instance.isDefault) {
+      _initialized = true;
+      debugPrint(
+        '[Hotkey] Additional instance does not register global hotkeys',
+      );
+      return;
+    }
+    _ownsGlobalHotkeys = true;
 
     // 先清理系统中可能由上一次进程状态遗留的注册，再逐项重建本服务的记录。
     await hotKeyManager.unregisterAll();
@@ -199,7 +210,7 @@ class HotkeyService {
 
   /// 取消注册所有快捷键
   Future<void> unregisterAll() async {
-    if (!PlatformUtils.isPhysicalDesktop) return;
+    if (!PlatformUtils.isPhysicalDesktop || !_ownsGlobalHotkeys) return;
     // 插件 API 是进程级清理，调用方应避免在其他模块独立注册热键。
     await hotKeyManager.unregisterAll();
     _registeredHotkeys.clear();

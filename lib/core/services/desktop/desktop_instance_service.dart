@@ -31,20 +31,47 @@ class DesktopInstanceService {
       }
     }
 
-    final normalized = _normalizeProfileId(requested);
+    final normalized = normalizeProfileId(requested);
     if (normalized != null) _profileId = normalized;
     debugPrint('[DesktopInstance] profile=$_profileId');
   }
 
   String storageKey(String baseKey) {
-    if (isDefault) return baseKey;
-    return '${baseKey}__profile_$_profileId';
+    return storageKeyFor(_profileId, baseKey);
   }
 
   String databaseDirectory(String applicationDocumentsPath) {
-    if (isDefault) return applicationDocumentsPath;
-    final separator = Platform.pathSeparator;
-    return '$applicationDocumentsPath${separator}profiles$separator$_profileId';
+    return databaseDirectoryFor(
+      _profileId,
+      applicationDocumentsPath,
+      Platform.pathSeparator,
+    );
+  }
+
+  static String storageKeyFor(String profileId, String baseKey) {
+    if (profileId == 'default') return baseKey;
+    return '${baseKey}__profile_$profileId';
+  }
+
+  static String databaseDirectoryFor(
+    String profileId,
+    String applicationDocumentsPath,
+    String pathSeparator,
+  ) {
+    if (profileId == 'default') return applicationDocumentsPath;
+    return '$applicationDocumentsPath${pathSeparator}profiles$pathSeparator$profileId';
+  }
+
+  static String createProfileId(int microsecondsSinceEpoch) {
+    return 'instance_${microsecondsSinceEpoch.toRadixString(36)}';
+  }
+
+  static String? normalizeProfileId(String? raw) {
+    var value = raw?.trim() ?? '';
+    if (value.isEmpty || value == 'default') return null;
+    value = value.replaceAll(_unsafeProfilePattern, '_');
+    if (value.length > 48) value = value.substring(0, 48);
+    return value.isEmpty ? null : value;
   }
 
   Future<void> launchNewInstance() async {
@@ -52,20 +79,15 @@ class DesktopInstanceService {
         !(Platform.isWindows || Platform.isMacOS || Platform.isLinux)) {
       return;
     }
-    final profile =
-        'instance_${DateTime.now().toUtc().microsecondsSinceEpoch.toRadixString(36)}';
+    final executable = Platform.resolvedExecutable;
+    final profile = createProfileId(
+      DateTime.now().toUtc().microsecondsSinceEpoch,
+    );
     await Process.start(
-      Platform.resolvedExecutable,
+      executable,
       ['--profile-id=$profile'],
       mode: ProcessStartMode.detached,
+      workingDirectory: File(executable).parent.path,
     );
-  }
-
-  String? _normalizeProfileId(String? raw) {
-    var value = raw?.trim() ?? '';
-    if (value.isEmpty || value == 'default') return null;
-    value = value.replaceAll(_unsafeProfilePattern, '_');
-    if (value.length > 48) value = value.substring(0, 48);
-    return value.isEmpty ? null : value;
   }
 }

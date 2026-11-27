@@ -96,6 +96,7 @@ class _CustomerAppState extends ConsumerState<CustomerApp>
   ProviderSubscription<AuthState>? _loginNoticeAuthSub;
   ProviderSubscription<AppLanguage>? _trayLanguageSub;
   ProviderSubscription<AsyncValue<SystemSettings>>? _traySettingsSub;
+  ProviderSubscription<AuthState>? _trayAccountSub;
   ProviderSubscription<AccountSessionState>? _accountSessionSub;
   ProviderSubscription<CallServiceState>? _callStateSub;
   StreamSubscription<String>? _deepLinkSubscription;
@@ -689,6 +690,25 @@ class _CustomerAppState extends ConsumerState<CustomerApp>
       },
       fireImmediately: true,
     );
+
+    _trayAccountSub?.close();
+    _trayAccountSub = ref.listenManual<AuthState>(
+      authServiceProvider,
+      (previous, next) {
+        final nextName = _trayAccountName(next.user);
+        if (previous != null && _trayAccountName(previous.user) == nextName) {
+          return;
+        }
+        unawaited(TrayService.instance.setAccountLabel(nextName));
+      },
+      fireImmediately: true,
+    );
+  }
+
+  String _trayAccountName(User? user) {
+    final nickname = user?.nickname.trim() ?? '';
+    if (nickname.isNotEmpty) return nickname;
+    return user?.username.trim() ?? '';
   }
 
   void _applyBrowserTitle(String title) {
@@ -1540,6 +1560,7 @@ class _CustomerAppState extends ConsumerState<CustomerApp>
     _loginNoticeAuthSub?.close();
     _trayLanguageSub?.close();
     _traySettingsSub?.close();
+    _trayAccountSub?.close();
     _accountSessionSub?.close();
     _callStateSub?.close();
     if (_discoverItemsUpdatedHandlerId != null) {
